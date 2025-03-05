@@ -1,38 +1,26 @@
 ```mermaid
 graph TD;
-    A[Tokenizer::tokenize_forth] -->|Start| B[Initialize cursor, clear tokens]
-    B --> C[Loop: Read next token]
+    A[Start Tokenization] --> B[Initialize Cursor, Clear Tokens]
+    B --> C[Read Next Token]
     
     C --> D{End of Input?}
     D -->|Yes| E[TOKEN_END, Stop]
-    D -->|No| F[Tokenizer::get_next_token]
+    D -->|No| F[Process Token]
     
-    F -->|Skip Whitespace| G[skip_whitespace]
-    F -->|Parse Word| H[Read characters until space]
+    F --> G{Whitespace?}
+    G -->|Yes| H[Skip Whitespace] --> C
+    G -->|No| I{In Symbol Table?}
     
-    H --> I{In Symbol Table?}
-    I -->|Yes| J[TOKEN_WORD, set word_id]
+    I -->|Yes| J[TOKEN_WORD, Set word_id] --> C
     I -->|No| K{Special Token?}
-    
-    K -->|Yes| L[Check Type]
-    L --> M[TOKEN_COMPILING if `:`]
-    L --> N[TOKEN_INTERPRETING if `;`]
-    L --> O[TOKEN_BEGINCOMMENT if `(`]
-    L --> P[TOKEN_ENDCOMMENT if `)`]
-    L --> Q[TOKEN_FLOAT if float detected]
-    L --> R[TOKEN_NUMBER if integer detected]
-    L --> S[TOKEN_UNKNOWN otherwise]
 
-    J --> U[Push Token to List]
-    M --> U
-    N --> U
-    O --> U
-    P --> U
-    Q --> U
-    R --> U
-    S --> U
+    K -->|`:` Found| L[TOKEN_COMPILING] --> C
+    K -->|`;` Found| M[TOKEN_INTERPRETING] --> C
+    K -->|`(` Found| N[TOKEN_BEGINCOMMENT] --> C
+    K -->|`)` Found| O[TOKEN_ENDCOMMENT] --> C
+    K -->|Float Detected| P[TOKEN_FLOAT, Convert] --> C
+    K -->|Number Detected| Q[TOKEN_NUMBER, Convert] --> C
+    K -->|Unknown| R[TOKEN_UNKNOWN] --> C
 
-    U --> C  %% Loop back to process the next token
-    
     E --> T[Return Token List]
 ```

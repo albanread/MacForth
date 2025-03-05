@@ -8,14 +8,14 @@ graph TD;
     A -->|generator| E[Generator Function]
     A -->|immediate_interpreter| F[Immediate Interpreter]
     A -->|immediate_compiler| G[Immediate Compiler]
-    A -->|data| H[Heap Data (Variables, Arrays, etc.)]
-    A -->|firstWordInVocabulary| I[First Word in Vocabulary]
-    A -->|dictionaryLists| J[Dictionary Lists (by word length)]
-    A -->|wordOrder| K[Word Order (Insertion Sequence)]
+    A -->|data| H["Heap Data"]
+    A -->|firstWordInVocabulary| I["First Word in Vocabulary"]
+    A -->|dictionaryLists| J["Dictionary Lists (by word length)"]
+    A -->|wordOrder| K["Word Order (Insertion Sequence)"]
     
     subgraph Dictionary Organization
-        J -->|0..16 word lengths| L[Dictionary Lists]
-        K -->|Tracks added words| M[Word Order List]
+        J -->|0..16 word lengths| L["Dictionary Lists"]
+        K -->|Tracks added words| M["Word Order List"]
     end
 
     subgraph Symbol Table
@@ -24,4 +24,6 @@ graph TD;
         C -->|Maps IDs to Names| P["vocab_id → 'CORE'"]
         C -->|Maps IDs to Names| Q["vocab_id → 'MATH'"]
     end
+```
+
 ```

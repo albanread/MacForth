@@ -16,3 +16,17 @@ graph TD;
     D -->|Previous Entry| C
     E -->|Previous Entry| D
 ```
+```mermaid
+graph TD;
+    subgraph ForthDictionaryEntry
+        A["ForthDictionaryEntry"]
+        A -->|word_id, vocab_id| B["Symbol Table"]
+        A -->|executable| C["Executable Function"]
+        A -->|generator| D["Generator Function"]
+        A -->|immediate_interpreter| E["Immediate Interpreter"]
+        A -->|immediate_compiler| F["Immediate Compiler"]
+        A -->|data| G["Heap Data"]
+    end
+
+    B -->|Maps IDs to Names| H["'DUP', 'SWAP'"]
+```

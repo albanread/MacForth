@@ -7,21 +7,21 @@ graph TD;
     D -->|Yes| E[TOKEN_END, Stop]
     D -->|No| F[Tokenizer::get_next_token]
     
-    F -->|Whitespace| G[skip_whitespace]
-    F -->|Word Parsing| H[Read characters until space]
+    F -->|Skip Whitespace| G[skip_whitespace]
+    F -->|Parse Word| H[Read characters until space]
     
-    H --> I{Word exists in SymbolTable?}
+    H --> I{In Symbol Table?}
     I -->|Yes| J[TOKEN_WORD, set word_id]
     I -->|No| K{Special Token?}
     
-    K -->|Yes| L{Check Token Type}
-    L -->|Colon ":"| M[TOKEN_COMPILING]
-    L -->|Semicolon ";"| N[TOKEN_INTERPRETING]
-    L -->|Opening `(`| O[TOKEN_BEGINCOMMENT, inComment=True]
-    L -->|Closing `)`| P[TOKEN_ENDCOMMENT, inComment=False]
-    L -->|Float detected| Q[TOKEN_FLOAT, Convert to float]
-    L -->|Number detected| R[TOKEN_NUMBER, Convert to int]
-    L -->|Unknown token| S[TOKEN_UNKNOWN]
+    K -->|Yes| L[Check Type]
+    L --> M[TOKEN_COMPILING if `:`]
+    L --> N[TOKEN_INTERPRETING if `;`]
+    L --> O[TOKEN_BEGINCOMMENT if `(`]
+    L --> P[TOKEN_ENDCOMMENT if `)`]
+    L --> Q[TOKEN_FLOAT if float detected]
+    L --> R[TOKEN_NUMBER if integer detected]
+    L --> S[TOKEN_UNKNOWN otherwise]
 
     J --> U[Push Token to List]
     M --> U

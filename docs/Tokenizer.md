@@ -15,8 +15,8 @@ graph TD;
     I -->|No| K{Special Token?}
     
     K -->|Yes| L{Check Token Type}
-    L -->|Colon `:`| M[TOKEN_COMPILING]
-    L -->|Semicolon `;`| N[TOKEN_INTERPRETING]
+    L -->|Colon ":"| M[TOKEN_COMPILING]
+    L -->|Semicolon ";"| N[TOKEN_INTERPRETING]
     L -->|Opening `(`| O[TOKEN_BEGINCOMMENT, inComment=True]
     L -->|Closing `)`| P[TOKEN_ENDCOMMENT, inComment=False]
     L -->|Float detected| Q[TOKEN_FLOAT, Convert to float]

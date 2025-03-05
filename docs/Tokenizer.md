@@ -15,13 +15,13 @@ graph TD;
     I -->|No| K{Special Token?}
     
     K -->|Yes| L{Check Token Type}
-    L -->|:| M[TOKEN_COMPILING]
-    L -->|;| N[TOKEN_INTERPRETING]
-    L -->|"("| O[TOKEN_BEGINCOMMENT, inComment=True]
-    L -->|")"| P[TOKEN_ENDCOMMENT, inComment=False]
-    L -->|is_float()| Q[TOKEN_FLOAT, Convert to float]
-    L -->|is_number()| R[TOKEN_NUMBER, Convert to int]
-    L -->|Unknown| S[TOKEN_UNKNOWN]
+    L -->|Colon `:`| M[TOKEN_COMPILING]
+    L -->|Semicolon `;`| N[TOKEN_INTERPRETING]
+    L -->|Opening `(`| O[TOKEN_BEGINCOMMENT, inComment=True]
+    L -->|Closing `)`| P[TOKEN_ENDCOMMENT, inComment=False]
+    L -->|Float detected| Q[TOKEN_FLOAT, Convert to float]
+    L -->|Number detected| R[TOKEN_NUMBER, Convert to int]
+    L -->|Unknown token| S[TOKEN_UNKNOWN]
 
     J --> U[Push Token to List]
     M --> U

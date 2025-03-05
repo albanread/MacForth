@@ -6,7 +6,9 @@ I dedicate this project to the hard work, and tireless cheerful atittude of the 
 Also many thanks to ASMJIT project.
 
 For me this is as much about understanding the LLMs as it is about FORTH.
+
 I act as project manager, coordinator, and agent for the LLM.
+
 The LLM writes the code, although I have to help out quite a bit.
 
 

@@ -14,10 +14,10 @@ flowchart TD
     I -->|Yes| J[TOKEN_WORD, Set word_id] --> C
     I -->|No| K{Special Token?}
 
-    K -->|`:` Found| L[TOKEN_COMPILING] --> C
-    K -->|`;` Found| M[TOKEN_INTERPRETING] --> C
-    K -->|`(` Found| N[TOKEN_BEGINCOMMENT] --> C
-    K -->|`)` Found| O[TOKEN_ENDCOMMENT] --> C
+    K -->|colon| L[TOKEN_COMPILING] --> C
+    K -->|semicolon| M[TOKEN_INTERPRETING] --> C
+    K -->|leftbracket| N[TOKEN_BEGINCOMMENT] --> C
+    K -->|rightbracket| O[TOKEN_ENDCOMMENT] --> C
     K -->|Float Detected| P[TOKEN_FLOAT, Convert] --> C
     K -->|Number Detected| Q[TOKEN_NUMBER, Convert] --> C
     K -->|Unknown Token| R[TOKEN_UNKNOWN] --> C

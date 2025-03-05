@@ -1,5 +1,5 @@
 ```mermaid
-graph TD;
+flowchart TD
     A[Start Tokenization] --> B[Initialize Cursor, Clear Tokens]
     B --> C[Read Next Token]
     
@@ -20,7 +20,7 @@ graph TD;
     K -->|`)` Found| O[TOKEN_ENDCOMMENT] --> C
     K -->|Float Detected| P[TOKEN_FLOAT, Convert] --> C
     K -->|Number Detected| Q[TOKEN_NUMBER, Convert] --> C
-    K -->|Unknown| R[TOKEN_UNKNOWN] --> C
+    K -->|Unknown Token| R[TOKEN_UNKNOWN] --> C
 
     E --> T[Return Token List]
 ```

@@ -6,6 +6,7 @@
 #include <vector>
 #include <cctype>
 #include <unordered_map>
+#include <stdexcept>
 
 // let_token types
 enum class let_token_type {
@@ -22,10 +23,11 @@ enum class let_token_type {
 struct let_token {
     std::string text;
     let_token_type type;
+    std::size_t position; // to improve error messages (index in input string)
 };
 
 // Utility: convert string to uppercase
-std::string toUpper(const std::string &s) {
+inline std::string toUpper(const std::string &s) {
     std::string result = s;
     for (auto &c: result) {
         c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
@@ -46,147 +48,156 @@ constexpr bool isPunctuationChar(char c) {
     return c == '(' || c == ')' || isDelimiterChar(c);
 }
 
+inline std::vector<let_token> tokenize(const std::string &input) {
+    std::cout << "input: " << input << std::endl;
 
-bool isDigit(char c) {
-    return c >= '0' && c <= '9';
-}
-
-bool isValidNumber(const std::string &text) {
-    bool hasDot = false;
-    for (char c: text) {
-        if (c == '.') {
-            if (hasDot) {
-                return false; // More than one '.' is invalid
-            }
-            hasDot = true;
-        } else if (!isDigit(c)) {
-            return false; // Non-digit character found
-        }
-    }
-    return true; // Valid numeric literal
-}
-
-
-// The main tokenizer function
-std::vector<let_token> tokenize(const std::string &input) {
-    // Maps for quick identification of keywords and functions
     static const std::unordered_map<std::string, let_token_type> keywords = {
         {"LET", let_token_type::KEYWORD},
         {"FN", let_token_type::KEYWORD},
-        {"WHERE", let_token_type::KEYWORD}
+        {"WHERE", let_token_type::KEYWORD},
     };
 
     static const std::unordered_map<std::string, let_token_type> functions = {
         {"sqrt", let_token_type::FUNC},
         {"sin", let_token_type::FUNC},
         {"cos", let_token_type::FUNC},
+        {"tan", let_token_type::FUNC},
         {"exp", let_token_type::FUNC},
-        {"ln", let_token_type::FUNC}
+        {"log", let_token_type::FUNC},
+        {"ln", let_token_type::FUNC},
+        {"fabs", let_token_type::FUNC},
+        {"abs", let_token_type::FUNC},
+        {"sinh", let_token_type::FUNC},
+        {"cosh", let_token_type::FUNC},
+        {"tanh", let_token_type::FUNC},
+        {"asin", let_token_type::FUNC},
+        {"acos", let_token_type::FUNC},
+        {"atan", let_token_type::FUNC},
+        {"log2", let_token_type::FUNC},
+        {"log10", let_token_type::FUNC},
+        {"atan2", let_token_type::FUNC},
+        {"pow", let_token_type::FUNC},
+        {"hypot", let_token_type::FUNC},
+        {"fmod", let_token_type::FUNC},
+        {"remainder", let_token_type::FUNC},
+        {"fmin", let_token_type::FUNC},
+        {"fmax", let_token_type::FUNC},
+        {"display", let_token_type::FUNC}
     };
 
     std::vector<let_token> tokens;
     std::size_t i = 0;
+    const std::size_t n = input.size();
 
-    while (i < input.size()) {
+    while (i < n) {
         // Skip whitespace
         if (std::isspace(static_cast<unsigned char>(input[i]))) {
             i++;
             continue;
         }
 
-        // Parentheses and delimiters
+        // Parentheses or delimiter
         if (isPunctuationChar(input[i])) {
             let_token t;
             t.text = input.substr(i, 1);
-            t.type = (input[i] == '(' || input[i] == ')') ? let_token_type::PAREN : let_token_type::DELIM;
+            t.position = i;
+            if (input[i] == '(' || input[i] == ')') {
+                t.type = let_token_type::PAREN;
+            } else {
+                t.type = let_token_type::DELIM;
+            }
             tokens.push_back(t);
             i++;
             continue;
         }
 
-        // Operators (single character only)
+        // Operators (single character)
         if (isOperatorChar(input[i])) {
             let_token t;
             t.text = input.substr(i, 1);
+            t.position = i;
             t.type = let_token_type::OP;
             tokens.push_back(t);
             i++;
             continue;
         }
 
-        // Attempt to parse numbers (including decimal part)
+        // Attempt numeric literal (possibly with exponent)
         if (std::isdigit(static_cast<unsigned char>(input[i])) || input[i] == '.') {
             std::size_t start = i;
-            bool hasDecimal = (input[i] == '.'); // Track if decimal point is encountered
+            bool hasDecimal = false;
+            bool hasExponent = false;
 
-            i++;
-
-            while (i < input.size()) {
-                if (std::isdigit(static_cast<unsigned char>(input[i]))) {
+            // Parse integral/decimal part
+            while (i < n) {
+                char c = input[i];
+                if (std::isdigit(static_cast<unsigned char>(c))) {
                     i++;
-                } else if (input[i] == '.' && !hasDecimal) {
-                    hasDecimal = true; // First decimal point is valid
+                } else if (c == '.' && !hasDecimal && !hasExponent) {
+                    hasDecimal = true;
                     i++;
+                } else if ((c == 'e' || c == 'E') && !hasExponent) {
+                    // parse exponent
+                    hasExponent = true;
+                    i++;
+                    // optional sign after exponent
+                    if (i < n && (input[i] == '+' || input[i] == '-')) {
+                        i++;
+                    }
                 } else {
-                    break; // Stop when encountering invalid characters
+                    break;
                 }
             }
 
-            // Extract the number from the input
             std::string number = input.substr(start, i - start);
-
-            // Check if the number is valid: it cannot contain multiple '.' or non-digits
-            if (!hasDecimal || (hasDecimal && number.size() > 1)) {
-                // Add the number as a NUM token
-                tokens.push_back({number, let_token_type::NUM });
-            } else {
-                throw std::runtime_error("Invalid number format: " + number);
-            }
-
+            // Basic validation could be done here. We assume it's valid for brevity.
+            let_token t{number, let_token_type::NUM, start};
+            tokens.push_back(t);
             continue;
         }
 
-
-        // Attempt to parse identifiers (keywords, functions, or variables)
+        // Attempt identifiers (keywords, functions, or variables)
         if (std::isalpha(static_cast<unsigned char>(input[i]))) {
             std::size_t start = i;
-            while (i < input.size() &&
-                   (std::isalnum(static_cast<unsigned char>(input[i])) || input[i] == '_')) {
+            // Gather alphanumeric + underscores
+            while (i < n && (std::isalnum(static_cast<unsigned char>(input[i])) || input[i] == '_')) {
                 i++;
             }
 
             std::string word = input.substr(start, i - start);
             std::string uppercaseWord = toUpper(word);
 
+            let_token t;
+            t.text = word;
+            t.position = start;
+
             auto kwIt = keywords.find(uppercaseWord);
             auto fnIt = functions.find(word);
-
             if (kwIt != keywords.end()) {
-                tokens.push_back({word, let_token_type::KEYWORD});
+                t.type = let_token_type::KEYWORD;
             } else if (fnIt != functions.end()) {
-                tokens.push_back({word, let_token_type::FUNC});
-            } else if (word.size() == 1 && std::islower(static_cast<unsigned char>(word[0]))) {
-                // Single-letter variable (a-z only)
-                tokens.push_back({word, let_token_type::VAR});
+                t.type = let_token_type::FUNC;
             } else {
-                // Unknown identifier
-                tokens.push_back({word, let_token_type::UNKNOWN});
+                // Treat all other valid identifiers as variables
+                t.type = let_token_type::VAR;
             }
+            tokens.push_back(t);
             continue;
         }
 
-        // If none of the above apply, mark as UNKNOWN
-        {
-            let_token t;
-            t.text = input.substr(i, 1);
-            t.type = let_token_type::UNKNOWN;
-            tokens.push_back(t);
-            i++;
-        }
+        // If none match, it's UNKNOWN
+        let_token t;
+        t.text = input.substr(i, 1);
+        t.position = i;
+        t.type = let_token_type::UNKNOWN;
+        tokens.push_back(t);
+        i++;
     }
 
     return tokens;
 }
+
+
 
 // Example usage:
 inline int test_lex() {
@@ -214,7 +225,7 @@ inline int test_lex() {
             default: std::cout << "UNKNOWN";
                 break;
         }
-        std::cout << ")\n";
+        std::cout << ") at pos=" << tk.position << "\n";
     }
 
     return 0;

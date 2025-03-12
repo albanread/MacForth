@@ -47,7 +47,10 @@ private:
         "DEFINITIONS: needed a preceding vocabulary.",      // 18
         "Unhandled token type encountered",                  // 19
         "Failed to initialize CodeHolder with JIT environment.", // 20
-        "Label Manager error." // 21
+        "Label Manager error.", // 21
+        "LET statement generator error." , // 22
+        "LET statement Lexer error.", // 23
+        "LET statement Parser error." // 24
     };
 
     // Jump buffer for longjmp

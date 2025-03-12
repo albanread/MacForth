@@ -11,7 +11,7 @@
 [[maybe_unused]] static void pushRS(const asmjit::x86::Gp& reg);
 [[maybe_unused]] static void popRS(const asmjit::x86::Gp& reg);
 
-
+bool initialize_assembler(asmjit::x86::Assembler *&assembler);
 
 void code_generator_initialize();
 

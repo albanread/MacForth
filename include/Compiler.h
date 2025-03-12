@@ -11,6 +11,8 @@ class Compiler : public Singleton<Compiler> {
     friend class Singleton<Compiler>;
 
 public:
+    void compile_let(const std::string &input);
+
     // Main compile entry point
     void compile_words(std::deque<ForthToken> &input_tokens);
 

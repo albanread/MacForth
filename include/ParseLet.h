@@ -1,10 +1,14 @@
-#include "LexLet.h"
-#include <stdexcept>
+#ifndef PARSELET_H
+#define PARSELET_H
+#include "SignalHandler.h"
 #include <string>
 #include <vector>
-#include <unordered_map>
 #include <set>
 #include <functional>
+#include <unordered_map>
+#include <unordered_set>
+#include <iostream>
+#include "LexLet.h" // The updated lexer header
 
 // Base abstract node
 struct ASTNode {
@@ -13,11 +17,12 @@ struct ASTNode {
 
 // Expression node types
 enum class ExprType {
-    LITERAL, // numeric constant
-    VARIABLE, // single variable name
-    FUNCTION, // sqrt(...), sin(...), etc.
-    BINARY_OP, // a + b, a * b, etc.
-    UNARY_OP // unary minus, etc.
+    LITERAL, // e.g., 42, "hello"
+    CONSTANT, // e.g., a variable that's effectively constant, like PI
+    VARIABLE, // dynamic variable
+    FUNCTION, // sqrt(x), sin(x)
+    BINARY_OP, // a + b, a * b
+    UNARY_OP // -a, +a
 };
 
 // Expression node
@@ -25,6 +30,8 @@ struct Expression : public ASTNode {
     ExprType type;
     std::string value; // literal text, variable name, function name, or operator symbol
     std::vector<std::unique_ptr<Expression> > children;
+    bool processed = false;
+    bool isConstant = false;
 
     Expression(ExprType t, const std::string &val)
         : type(t), value(val) {
@@ -41,19 +48,93 @@ struct WhereClause : public ASTNode {
 struct LetStatement : public ASTNode {
     std::vector<std::string> outputVars; // from (x, y, z)
     std::vector<std::string> inputParams; // from FN(a, b, c)
-    std::vector<std::unique_ptr<Expression> > expressions; // after = ..., possibly multiple comma-separated
+    std::vector<std::unique_ptr<Expression> > expressions;
     std::vector<std::unique_ptr<WhereClause> > whereClauses;
 };
+
+//-------------------- Helper Functions -----------------------//
+
+// Collect variables from an expression
+inline void collectVariables(const Expression *expr, std::set<std::string> &vars) {
+    if (!expr) return;
+    if (expr->type == ExprType::VARIABLE) {
+        vars.insert(expr->value);
+    }
+    // Recurse on children
+    for (auto &child: expr->children) {
+        collectVariables(child.get(), vars);
+    }
+}
+
+inline void validateVariableReferences(const LetStatement *letStmt) {
+    if (!letStmt) return;
+
+    // Step 1: Collect all known variables (outputVars, inputParams, WHERE clause variables)
+    std::unordered_set<std::string> validVariables;
+    validVariables.insert(letStmt->outputVars.begin(), letStmt->outputVars.end());
+    validVariables.insert(letStmt->inputParams.begin(), letStmt->inputParams.end());
+
+    for (const auto &wc: letStmt->whereClauses) {
+        validVariables.insert(wc->varName);
+    }
+
+    // Step 2: Traverse all expressions and collect referenced variables
+    std::set<std::string> usedVariables; // Track variables used in expressions/WHERE clauses
+    for (const auto &expr: letStmt->expressions) {
+        collectVariables(expr.get(), usedVariables); // Collect variables from expressions
+    }
+    for (const auto &wc: letStmt->whereClauses) {
+        collectVariables(wc->expr.get(), usedVariables); // Collect variables from WHERE clause expressions
+    }
+
+    // Step 3: Check that all used variables are valid
+    for (const auto &var: usedVariables) {
+        if (validVariables.count(var) == 0) {
+            std::cerr << "Error: Undefined variable '" << var << "' used in LET statement.\n";
+            SignalHandler::instance().raise(24); // Syntax error
+        }
+    }
+}
+
+
+
+inline bool isConstantExpression(const Expression *expr,
+                                 const std::unordered_set<std::string> &knownConstants) {
+    if (!expr) return false;
+
+    // LITERALs are always constant
+    if (expr->type == ExprType::LITERAL) return true;
+
+    // VARIABLEs must exist in the known constants set
+    if (expr->type == ExprType::VARIABLE) {
+        return knownConstants.count(expr->value) > 0;
+    }
+
+    // Check all children for FUNCTION, BINARY_OP, UNARY_OP
+    if (expr->type == ExprType::FUNCTION ||
+        expr->type == ExprType::BINARY_OP ||
+        expr->type == ExprType::UNARY_OP) {
+        for (const auto &child: expr->children) {
+            if (!isConstantExpression(child.get(), knownConstants)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    return false;
+}
+
 
 // Detect circular dependencies in WHERE clauses
 inline void detectCircularDependency(const std::vector<std::vector<int> > &dependencies) {
     std::vector<bool> visited(dependencies.size(), false);
     std::vector<bool> stack(dependencies.size(), false);
 
-    std::function<bool(int)> hasCycle = [&](int node) {
+    std::function<bool(int)> hasCycle = [&](int node) -> bool {
         if (!visited[node]) {
-            visited[node] = stack[node] = true;
-
+            visited[node] = true;
+            stack[node] = true;
             for (int neighbor: dependencies[node]) {
                 if (!visited[neighbor] && hasCycle(neighbor)) return true;
                 if (stack[neighbor]) return true;
@@ -64,85 +145,110 @@ inline void detectCircularDependency(const std::vector<std::vector<int> > &depen
     };
 
     for (size_t i = 0; i < dependencies.size(); ++i) {
-        if (hasCycle(i)) {
-            throw std::runtime_error("Error: Circular dependency detected in WHERE clauses.");
-        }
-    }
-}
-
-
-// Collect variables from an expression and add them to a set
-void collectVariables(const Expression *expr, std::set<std::string> &vars) {
-    if (!expr) return;
-
-    if (expr->type == ExprType::VARIABLE) {
-        vars.insert(expr->value);
-    }
-
-    // Recurse on children
-    for (auto &child: expr->children) {
-        collectVariables(child.get(), vars);
-    }
-}
-
-// Build WHERE clause dependencies and check for conflicts or circular dependencies
-static std::vector<std::vector<int> > buildWhereDependencies(
-    const std::vector<std::unique_ptr<WhereClause> > &whereClauses) {
-    // Map each variable -> index of the clause that defines it
-    std::unordered_map<std::string, int> varToClauseIndex;
-
-    // Populate the map for quick lookup while ensuring no duplicate definitions
-    for (int i = 0; i < static_cast<int>(whereClauses.size()); ++i) {
-        const auto &wc = whereClauses[i];
-        if (varToClauseIndex.find(wc->varName) != varToClauseIndex.end()) {
-            throw std::runtime_error("Error: variable '" + wc->varName +
-                                     "' defined more than once in WHERE clauses.");
-        }
-        varToClauseIndex[wc->varName] = i;
-    }
-
-    // Prepare adjacency list
-    std::vector<std::vector<int> > dependencies(whereClauses.size());
-
-    // Build dependencies by scanning each expression
-    for (int i = 0; i < static_cast<int>(whereClauses.size()); ++i) {
-        const auto &wc = whereClauses[i];
-        std::set<std::string> usedVars;
-        collectVariables(wc->expr.get(), usedVars);
-
-        for (const auto &v: usedVars) {
-            auto it = varToClauseIndex.find(v);
-            if (it != varToClauseIndex.end()) {
-                int definingClauseIndex = it->second;
-                if (definingClauseIndex != i) {
-                    dependencies[i].push_back(definingClauseIndex);
-                }
+        if (hasCycle(static_cast<int>(i))) {
+            std::cerr << ("Error: Circular dependency detected in WHERE clauses.") << std::endl;
+            std::cerr << "  Node " << i << " depends on itself." << std::endl;
+            std::cerr << "  Dependencies: ";
+            for (int neighbor: dependencies[i]) {
+                std::cerr << neighbor << " ";
             }
+            std::cerr << std::endl;
+            SignalHandler::instance().raise(24);
         }
     }
-    // Detect circular dependencies
-    detectCircularDependency(dependencies);
-    return dependencies;
 }
+
+inline void printExpression(const Expression *expr, int indent = 0) {
+    if (!expr) return;
+    std::string indentStr(indent * 2, ' ');
+    if (expr->type == ExprType::LITERAL) {
+        std::cout << indentStr << expr->value << "\n";
+    } else if (expr->type == ExprType::VARIABLE) {
+        std::cout << indentStr << expr->value << "\n";
+    } else if (expr->type == ExprType::CONSTANT) {
+        std::cout << indentStr << expr->value << "\n";
+    } else if (expr->type == ExprType::FUNCTION) {
+        std::cout << indentStr << expr->value << "(";
+        for (size_t i = 0; i < expr->children.size(); ++i) {
+        }
+    }
+}
+
+inline void printWhereClause(const WhereClause *wc, int indent = 0) {
+    std::string indentStr(indent * 2, ' ');
+    std::cout << indentStr << "Where: " << wc->varName << " =\n";
+    printExpression(wc->expr.get(), indent + 1);
+}
+
+
+//-------------------- Parser Class -----------------------//
 
 class Parser {
 public:
-    Parser(const std::vector<let_token> &let_tokens)
-        : let_tokens_(let_tokens), pos_(0) {
-        if (let_tokens_.empty()) {
-            throw std::runtime_error("Error: Empty input provided to the parser.");
+    explicit Parser(const std::vector<let_token> &letTokens)
+        : tokens_(letTokens), pos_(0) {
+        if (tokens_.empty()) {
+            std::cerr << ("Error: Empty token list provided.") << std::endl;
+            SignalHandler::instance().raise(24);
         }
+    }
+
+
+    void propagateConstants(Expression *expr, const std::unordered_set<std::string> &knownConstants) {
+        if (!expr) return;
+
+        // Step 1: Determine if the current node is constant
+        if (expr->type == ExprType::VARIABLE && knownConstants.count(expr->value) > 0) {
+            // Reclassify this VARIABLE as a CONSTANT
+            expr->type = ExprType::CONSTANT;
+            expr->isConstant = true;
+        } else if (expr->type == ExprType::LITERAL) {
+            // Literals are always constant
+            expr->isConstant = true;
+        } else if (expr->type == ExprType::CONSTANT) {
+            // Already marked as constant, nothing more to do
+            expr->isConstant = true;
+        }
+
+        // Step 2: Recursively propagate constants for child nodes in FUNCTIONS, OPERATORS, etc.
+        bool allChildrenAreConstant = true; // to determine if parents can also be constant
+        for (auto &child: expr->children) {
+            propagateConstants(child.get(), knownConstants);
+            if (child != nullptr && !child->isConstant) {
+                allChildrenAreConstant = false;
+            }
+        }
+
+        // Step 3: Update this node's constant status based on its type and children
+        if (expr->type == ExprType::FUNCTION || expr->type == ExprType::BINARY_OP || expr->type == ExprType::UNARY_OP) {
+            expr->isConstant = allChildrenAreConstant;
+        }
+    }
+
+    bool isLiteralExpression(const Expression *expr) {
+        if (!expr) return false;
+
+        // Directly check if the expression type is a literal
+        return expr->type == ExprType::LITERAL;
     }
 
     std::unique_ptr<LetStatement> parseLetStatement() {
         expectKeyword("LET");
         auto outVars = parseParenVarList();
+
         expectOperator("=");
         expectKeyword("FN");
         auto inParams = parseParenVarList();
-        expectOperator("=");
-        auto expressions = parseExpressionList();
 
+        // Mark input parameters as constants
+        for (const auto &param: inParams) {
+            knownConstants.insert(param);
+        }
+
+        expectOperator("=");
+        auto exprs = parseExpressionList(); // possibly multiple expressions separated by commas
+
+        // Parse all WHERE clauses initially
         std::vector<std::unique_ptr<WhereClause> > whereClauses;
         while (matchKeyword("WHERE")) {
             auto wc = std::make_unique<WhereClause>();
@@ -152,39 +258,99 @@ public:
             whereClauses.push_back(std::move(wc));
         }
 
-        auto dependencies = buildWhereDependencies(whereClauses);
+        // Process WHERE clauses to determine constants and detect reassignment
+        for (const auto &wc: whereClauses) {
+            // If the variable is already a known constant, raise an error
+            if (knownConstants.count(wc->varName) > 0) {
+                std::cerr << "Error: Attempting to reassign a value to constant '"
+                        << wc->varName << "' in WHERE clause.\n";
+                SignalHandler::instance().raise(24); // Raise syntax error
+            }
+
+            // If the WHERE clause defines a constant (e.g., `pi = 3.14`),
+            // add it to the known constants
+            if (isLiteralExpression(wc->expr.get())) {
+                // Helper function
+                knownConstants.insert(wc->varName);
+            }
+        }
+
+        // Sort WHERE clauses by dependency order
+        whereClauses = sortWhereClausesByDependency(std::move(whereClauses));
+
+        // Expect final semicolon
         matchDelimiter(";");
 
+        // Validate # of outputs vs # of expressions
+        if (outVars.size() != exprs.size()) {
+            std::cerr << (
+                        "Mismatch: # of output variables (" + std::to_string(outVars.size()) +
+                        ") != # of top-level expressions (" + std::to_string(exprs.size()) + ")")
+                    << std::endl;
+            SignalHandler::instance().raise(24);
+        }
+
+        // Build the final AST
         auto letStmt = std::make_unique<LetStatement>();
         letStmt->outputVars = std::move(outVars);
         letStmt->inputParams = std::move(inParams);
-        letStmt->expressions = std::move(expressions);
+        letStmt->expressions = std::move(exprs);
         letStmt->whereClauses = std::move(whereClauses);
+
+        // Propagate constants across all expressions and WHERE clause expressions
+        for (auto &expr: letStmt->expressions) {
+            propagateConstants(expr.get(), knownConstants);
+        }
+
+        for (auto &wc: letStmt->whereClauses) {
+            propagateConstants(wc->expr.get(), knownConstants);
+        }
+
+        validateVariableReferences(letStmt.get());
 
         return letStmt;
     }
 
-private:
-    const let_token &currentlet_token() const {
-        if (isAtEnd()) {
-            throw std::runtime_error("Unexpected end of input.");
+
+    // Print the resulting AST (for debugging/demo)
+    void printAST(const ASTNode *root) {
+        if (!root) return;
+        if (const auto *ls = dynamic_cast<const LetStatement *>(root)) {
+            printLetStatement(ls);
+        } else {
+            std::cerr << "Unknown AST node type encountered.\n";
+            SignalHandler::instance().raise(24);
         }
-        return let_tokens_[pos_];
     }
 
-    bool isAtEnd() const { return pos_ >= let_tokens_.size(); }
+private:
+    //=== Low-Level Accessors ===//
+    const let_token &currentToken() const {
+        if (pos_ >= tokens_.size()) {
+            std::cerr << "Unexpected end of token stream." << std::endl;
+            SignalHandler::instance().raise(24);
+        }
+        return tokens_[pos_];
+    }
+
+    bool isAtEnd() const {
+        return pos_ >= tokens_.size();
+    }
 
     const let_token &advance() {
         if (!isAtEnd()) pos_++;
-        return previouslet_token();
+        return previousToken();
     }
 
-    const let_token &previouslet_token() const { return let_tokens_[pos_ - 1]; }
+    const let_token &previousToken() const {
+        return tokens_[pos_ - 1];
+    }
 
-    bool matchKeyword([[maybe_unused]] const std::string &kw) {
-        static const std::set<std::string> keywords = {"LET", "FN", "WHERE"};
-        if (currentlet_token().type == let_token_type::KEYWORD &&
-            keywords.count(toUpper(currentlet_token().text))) {
+    //=== Matching Helpers ===//
+    bool matchKeyword(const std::string &kw) {
+        if (!isAtEnd() &&
+            currentToken().type == let_token_type::KEYWORD &&
+            toUpper(currentToken().text) == kw) {
             advance();
             return true;
         }
@@ -192,11 +358,15 @@ private:
     }
 
     void expectKeyword(const std::string &kw) {
-        if (!matchKeyword(kw)) throw std::runtime_error("Expected keyword: " + kw);
+        if (!matchKeyword(kw)) {
+            error("Expected keyword: " + kw);
+        }
     }
 
     bool matchOperator(const std::string &op) {
-        if (currentlet_token().type == let_token_type::OP && currentlet_token().text == op) {
+        if (!isAtEnd() &&
+            currentToken().type == let_token_type::OP &&
+            currentToken().text == op) {
             advance();
             return true;
         }
@@ -204,271 +374,366 @@ private:
     }
 
     void expectOperator(const std::string &op) {
-        if (!matchOperator(op)) throw std::runtime_error("Expected operator: " + op);
+        if (!matchOperator(op)) {
+            error("Expected operator: " + op);
+        }
     }
 
     bool matchDelimiter(const std::string &delim) {
-        if (currentlet_token().type == let_token_type::DELIM && currentlet_token().text == delim) {
+        if (!isAtEnd() &&
+            currentToken().type == let_token_type::DELIM &&
+            currentToken().text == delim) {
             advance();
             return true;
         }
         return false;
     }
 
-    std::string expectVar() {
-        if (currentlet_token().type == let_token_type::VAR) {
-            std::string v = currentlet_token().text;
-            advance();
-            return v;
+    //=== Error Utility ===//
+    void error(const std::string &msg) const {
+        std::string positionInfo;
+        if (!isAtEnd()) {
+            positionInfo = " (at token text='" + currentToken().text +
+                           "', pos=" + std::to_string(currentToken().position) + ")";
         }
-        throw std::runtime_error("Expected variable name at position " + std::to_string(pos_));
+        std::cerr << "Error: " << msg << positionInfo << std::endl;
+        SignalHandler::instance().raise(24);
     }
 
-    std::vector<std::string> parseParenVarList() {
-        if (currentlet_token().text != "(") throw std::runtime_error("Expected '('");
+    //=== Variable Expectation ===//
+    std::string expectVar() {
+        if (isAtEnd()) {
+            error("Expected variable name, but reached end of tokens");
+        }
+        if (currentToken().type != let_token_type::VAR) {
+            error("Expected variable name, found '" + currentToken().text + "'");
+        }
+        std::string v = currentToken().text;
         advance();
+        return v;
+    }
+
+    //=== Parse (x, y, z) ===//
+    std::vector<std::string> parseParenVarList() {
+        // Expect '('
+        if (isAtEnd() || currentToken().text != "(") {
+            error("Expected '('");
+        }
+        advance(); // consume '('
 
         std::vector<std::string> vars;
-        if (currentlet_token().text != ")") {
+        // if next is ')', empty list
+        if (!isAtEnd() && currentToken().text != ")") {
             vars.push_back(expectVar());
-            while (matchDelimiter(",")) vars.push_back(expectVar());
+            while (matchDelimiter(",")) {
+                vars.push_back(expectVar());
+            }
         }
 
-        if (currentlet_token().text != ")") throw std::runtime_error("Expected ')'");
-        advance();
+        // expect ')'
+        if (isAtEnd() || currentToken().text != ")") {
+            error("Expected ')'");
+        }
+        advance(); // consume ')'
+
         return vars;
     }
 
+    //=== Parse Expression List: expr, expr, expr ===//
     std::vector<std::unique_ptr<Expression> > parseExpressionList() {
         std::vector<std::unique_ptr<Expression> > exprs;
         exprs.push_back(parseExpression());
-
         while (matchDelimiter(",")) {
             exprs.push_back(parseExpression());
         }
         return exprs;
     }
 
+    //=== Expression Parsing ===//
+    // We handle standard precedence: unary -> power -> mul/div -> add/sub
+
     std::unique_ptr<Expression> parseExpression() {
-        // Start from the highest-level expression (Add/Sub)
         return parseAddSub();
     }
 
+    // parseAddSub: left-associative
     std::unique_ptr<Expression> parseAddSub() {
-        // Parse the left operand (higher precedence level: Mul/Div)
         auto left = parseMulDiv();
-
-        // Parse any number of addition/subtraction operations
-        while (!isAtEnd() && (currentlet_token().text == "+" || currentlet_token().text == "-")) {
-            // Capture the operator
-            std::string op = currentlet_token().text;
+        while (!isAtEnd() && (currentToken().text == "+" || currentToken().text == "-")) {
+            std::string op = currentToken().text;
             advance();
-
-            // Parse the right operand
             auto right = parseMulDiv();
 
-            // Create a binary operation node
             auto expr = std::make_unique<Expression>(ExprType::BINARY_OP, op);
             expr->children.push_back(std::move(left));
             expr->children.push_back(std::move(right));
 
-            // Update "left" to be this new expression
+            if (expr->children[0]->isConstant && expr->children[1]->isConstant) {
+                expr->isConstant = true;
+            }
+
             left = std::move(expr);
         }
-
         return left;
     }
 
+    // parseMulDiv: left-associative
     std::unique_ptr<Expression> parseMulDiv() {
-        // Parse the left operand (next precedence level: Power)
         auto left = parsePower();
-
-        // Parse any number of multiplication/division operations
-        while (!isAtEnd() && (currentlet_token().text == "*" || currentlet_token().text == "/")) {
-            // Capture the operator
-            std::string op = currentlet_token().text;
+        while (!isAtEnd() && (currentToken().text == "*" || currentToken().text == "/")) {
+            std::string op = currentToken().text;
             advance();
-
-            // Parse the right operand
             auto right = parsePower();
 
-            // Create a binary operation node
             auto expr = std::make_unique<Expression>(ExprType::BINARY_OP, op);
             expr->children.push_back(std::move(left));
             expr->children.push_back(std::move(right));
 
-            // Update "left" to be this new expression
+            if (expr->children[0]->isConstant && expr->children[1]->isConstant) {
+                expr->isConstant = true;
+            }
+
+
             left = std::move(expr);
         }
-
         return left;
     }
 
+    // parsePower: handle '^' right-associative
     std::unique_ptr<Expression> parsePower() {
-        // Parse the left operand (lower precedence level: Factor)
-        auto left = parseFactor();
-
-        // Handle right-associative power operator "^"
-        if (!isAtEnd() && currentlet_token().text == "^") {
-            // Capture the operator
-            std::string op = currentlet_token().text;
+        auto left = parseUnary();
+        if (!isAtEnd() && currentToken().text == "^") {
+            std::string op = currentToken().text;
             advance();
-
-            // Parse the right operand
-            auto right = parsePower();
-
-            // Create a binary operation node
+            auto right = parsePower(); // right-associative
             auto expr = std::make_unique<Expression>(ExprType::BINARY_OP, op);
             expr->children.push_back(std::move(left));
             expr->children.push_back(std::move(right));
+
+            if (expr->children[0]->isConstant && expr->children[1]->isConstant) {
+                expr->isConstant = true;
+            }
 
             return expr;
         }
-
         return left;
     }
-std::unique_ptr<Expression> parseFactor() {
-    // Handle grouped expressions "( ... )"
-    if (currentlet_token().text == "(") {
-        advance(); // Consume '('
-        auto expr = parseExpression(); // Parse the inner expression
-        if (currentlet_token().text != ")") {
-            throw std::runtime_error("Expected ')' to close grouped expression");
+
+    // parseUnary: handle unary minus
+    std::unique_ptr<Expression> parseUnary() {
+        // unary minus
+        if (!isAtEnd() && currentToken().text == "-") {
+            advance(); // consume '-'
+            auto child = parseUnary(); // parse factor after minus
+            auto expr = std::make_unique<Expression>(ExprType::UNARY_OP, "neg");
+            expr->children.push_back(std::move(child));
+
+            if (expr->children[0]->isConstant && expr->children[1]->isConstant) {
+                expr->isConstant = true;
+            }
+
+
+            return expr;
         }
-        advance(); // Consume ')'
-        return expr;
+        return parseFactor();
     }
 
-    // Handle numeric literals
-    if (currentlet_token().type == let_token_type::NUM) {
-        auto expr = std::make_unique<Expression>(ExprType::LITERAL, currentlet_token().text);
-        advance();
-        return expr;
-    }
-
-    // Handle variables
-    if (currentlet_token().type == let_token_type::VAR) {
-        auto expr = std::make_unique<Expression>(ExprType::VARIABLE, currentlet_token().text);
-        advance();
-        return expr;
-    }
-
-    // Handle function calls: FUNC "(" expression ")"
-    if (currentlet_token().type == let_token_type::FUNC) {
-        std::string funcName = currentlet_token().text; // Get the function name
-        advance(); // Consume the FUNC token
-        if (currentlet_token().text != "(") {
-            throw std::runtime_error("Expected '(' after function name: " + funcName);
+    // parseFactor: literal, variable, function call, or parenthesized expr
+    std::unique_ptr<Expression> parseFactor() {
+        if (isAtEnd()) {
+            error("Unexpected end of token stream while parsing factor");
         }
-        advance(); // Consume '('
 
-        // Parse the argument(s) for the function
-        auto funcExpr = std::make_unique<Expression>(ExprType::FUNCTION, funcName);
-        funcExpr->children.push_back(parseExpression()); // Parse the argument
-
-        if (currentlet_token().text != ")") {
-            throw std::runtime_error("Expected ')' to close function arguments for: " + funcName);
+        // Grouped expression
+        if (currentToken().text == "(") {
+            advance(); // consume '('
+            auto expr = parseExpression();
+            if (isAtEnd() || currentToken().text != ")") {
+                error("Expected ')' to close grouped expression");
+            }
+            advance(); // consume ')'
+            return expr;
         }
-        advance(); // Consume ')'
 
-        return funcExpr;
+        // Numeric literal
+        if (currentToken().type == let_token_type::NUM) {
+            auto expr = std::make_unique<Expression>(ExprType::LITERAL, currentToken().text);
+            expr->isConstant = true;
+            advance();
+            return expr;;
+        }
+
+        // Variable
+        if (currentToken().type == let_token_type::VAR) {
+            bool isConst = knownConstants.find(currentToken().text) != knownConstants.end();
+            auto exprType = isConst ? ExprType::CONSTANT : ExprType::VARIABLE;
+            auto expr = std::make_unique<Expression>(exprType, currentToken().text);
+            expr->isConstant = isConst;
+            advance();
+            return expr;
+        }
+
+        // Function call: e.g. sqrt(...), sin(...), possibly multi-arg
+        if (currentToken().type == let_token_type::FUNC) {
+            std::string funcName = currentToken().text;
+            advance(); // consume function token
+
+            if (isAtEnd() || currentToken().text != "(") {
+                error("Expected '(' after function name '" + funcName + "'");
+            }
+            advance(); // consume '('
+
+            auto funcExpr = std::make_unique<Expression>(ExprType::FUNCTION, funcName);
+
+            // Parse at least one argument unless we see ')'
+            if (!isAtEnd() && currentToken().text != ")") {
+                funcExpr->children.push_back(parseExpression());
+                // Possibly more comma-separated arguments
+                while (matchDelimiter(",")) {
+                    funcExpr->children.push_back(parseExpression());
+                }
+            }
+
+            if (isAtEnd() || currentToken().text != ")") {
+                error("Expected ')' to close function arguments for '" + funcName + "'");
+            }
+            advance(); // consume ')'
+
+            return funcExpr;
+        }
+
+        // If UNKNOWN or something else, error
+        error("Unexpected token while parsing factor: '" + currentToken().text + "'");
+        return nullptr; // unreachable
     }
 
-    throw std::runtime_error("Unexpected token while parsing factor: " + currentlet_token().text);
-}
-    std::string toUpper(const std::string &s) {
-        std::string result;
-        result.reserve(s.size());
-        for (char c: s) {
-            result.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+    //=== Debug Printing ===//
+
+    static std::string printExprType(const ExprType type) {
+        switch (type) {
+            case ExprType::LITERAL:
+                return "Literal";
+            case ExprType::CONSTANT:
+                return "Constant";
+            case ExprType::VARIABLE:
+                return "Variable";
+            case ExprType::FUNCTION:
+                return "Function";
+            case ExprType::BINARY_OP:
+                return "Binary Operation";
+            case ExprType::UNARY_OP:
+                return "Unary Operation";
+            default:
+                return "Unknown Expression Type";
         }
-        return result;
     }
 
-
-
-    // Function to print an Expression node
-    void printExpression(const Expression *expr, int indent = 0) {
+    void printExpression(const Expression *expr, int indent = 0) const {
         if (!expr) return;
-
-        // Print indentation
-        for (int i = 0; i < indent; ++i) std::cout << "  ";
-
-        // Print expression type and value
-        std::cout << "Expression [" << static_cast<int>(expr->type) << "] : " << expr->value << std::endl;
-
-        // Recursively print children
-        for (const auto &child: expr->children) {
+        std::string indentStr(indent * 2, ' ');
+        std::cout << indentStr << "ExprType=" << printExprType(expr->type)
+                << ",  value='" << expr->value << "'\n";
+        if (expr->isConstant) std::cout << indentStr << " is Constant.\n";
+        for (auto &child: expr->children) {
             printExpression(child.get(), indent + 1);
         }
     }
 
-    // Function to print a WhereClause
-    void printWhereClause(const WhereClause *whereClause, int indent = 0) {
-        if (!whereClause) return;
-
-        // Print indentation
-        for (int i = 0; i < indent; ++i) std::cout << "  ";
-
-        std::cout << "WhereClause: " << whereClause->varName << " = " << std::endl;
-
-        // Print the corresponding expression
-        printExpression(whereClause->expr.get(), indent + 1);
+    void printWhereClause(const WhereClause *wc, int indent = 0) const {
+        std::string indentStr(indent * 2, ' ');
+        std::cout << indentStr << "Where: " << wc->varName << " =\n";
+        printExpression(wc->expr.get(), indent + 1);
     }
 
-    // Function to print a LetStatement
-    void printLetStatement(const LetStatement *letStmt, int indent = 0) {
-        if (!letStmt) return;
-
-        // Print indentation
-        for (int i = 0; i < indent; ++i) std::cout << "  ";
-
-        std::cout << "LetStatement:" << std::endl;
-
-        // Print output variables
-        for (int i = 0; i < indent + 1; ++i) std::cout << "  ";
-        std::cout << "Output Variables: ";
-        for (const auto &var: letStmt->outputVars) {
-            std::cout << var << " ";
+    void printLetStatement(const LetStatement *letStmt) const {
+        std::cout << "LetStatement:\n";
+        std::cout << "  Output Vars: ";
+        for (auto &ov: letStmt->outputVars) std::cout << ov << " ";
+        std::cout << "\n  Input Params: ";
+        for (auto &ip: letStmt->inputParams) std::cout << ip << " ";
+        std::cout << "\n  Expressions:\n";
+        for (auto &ex: letStmt->expressions) {
+            printExpression(ex.get(), 2);
         }
-        std::cout << std::endl;
-
-        // Print input parameters
-        for (int i = 0; i < indent + 1; ++i) std::cout << "  ";
-        std::cout << "Input Parameters: ";
-        for (const auto &param: letStmt->inputParams) {
-            std::cout << param << " ";
-        }
-        std::cout << std::endl;
-
-        // Print expressions
-        for (int i = 0; i < indent + 1; ++i) std::cout << "  ";
-        std::cout << "Expressions:" << std::endl;
-        for (const auto &expr: letStmt->expressions) {
-            printExpression(expr.get(), indent + 2);
+        std::cout << "  Where Clauses:\n";
+        for (auto &wc: letStmt->whereClauses) {
+            printWhereClause(wc.get(), 2);
         }
 
-        // Print WHERE clauses
-        for (int i = 0; i < indent + 1; ++i) std::cout << "  ";
-        std::cout << "Where Clauses:" << std::endl;
-        for (const auto &whereClause: letStmt->whereClauses) {
-            printWhereClause(whereClause.get(), indent + 2);
-        }
+        // print Known constants
+        std::cout << "  Known Constants: ";
+        for (auto &c: knownConstants) std::cout << c << " ";
+        std::cout << "\n";
     }
 
-public:
-    void printAST(const ASTNode *root) {
-        // Helper function to start printing the ASTvoid printAST(const ASTNode* root) {
-        if (!root) return;
-
-        if (const auto *letStmt = dynamic_cast<const LetStatement *>(root)) {
-            printLetStatement(letStmt);
-        } else {
-            std::cerr << "Unknown AST node type encountered!" << std::endl;
+    std::vector<std::unique_ptr<WhereClause> > sortWhereClausesByDependency(
+        std::vector<std::unique_ptr<WhereClause> > whereClauses) {
+        // Map each variable name to its corresponding WHERE clause index
+        std::unordered_map<std::string, int> varToClauseIndex;
+        varToClauseIndex.reserve(whereClauses.size());
+        for (int i = 0; i < static_cast<int>(whereClauses.size()); ++i) {
+            varToClauseIndex[whereClauses[i]->varName] = i;
         }
+
+        // Track dependencies between WHERE clauses
+        std::vector<std::vector<int> > dependencies(whereClauses.size());
+
+        // Analyze dependencies and detect constants
+        for (int i = 0; i < static_cast<int>(whereClauses.size()); ++i) {
+            std::set<std::string> usedVars;
+            collectVariables(whereClauses[i]->expr.get(), usedVars);
+
+            bool isConstant = true; // Determine if the current clause defines a constant
+            for (const auto &v: usedVars) {
+                auto it = varToClauseIndex.find(v);
+                if (it != varToClauseIndex.end()) {
+                    dependencies[i].push_back(it->second); // Track dependency
+                    isConstant = false; // If it depends on another clause, it's not constant
+                } else if (knownConstants.find(v) == knownConstants.end()) {
+                    isConstant = false; // If it depends on something unknown, it's not constant
+                }
+            }
+
+            // If determined to be a constant, add the variable to knownConstants
+            if (isConstant) {
+                knownConstants.insert(whereClauses[i]->varName);
+            }
+        }
+
+        // Check for circular dependencies among non-constant clauses
+        detectCircularDependency(dependencies);
+
+        // Topological sorting of the WHERE clauses
+        std::vector<int> sortedIndices;
+        std::vector<bool> visited(whereClauses.size(), false);
+        std::function<void(int)> dfs = [&](int node) {
+            if (visited[node]) return;
+            visited[node] = true;
+            for (int neighbor: dependencies[node]) {
+                dfs(neighbor);
+            }
+            sortedIndices.push_back(node);
+        };
+        for (size_t i = 0; i < whereClauses.size(); ++i) {
+            if (!visited[i]) {
+                dfs(static_cast<int>(i));
+            }
+        }
+        std::reverse(sortedIndices.begin(), sortedIndices.end());
+
+        // Rebuild the sorted WHERE clauses vector
+        std::vector<std::unique_ptr<WhereClause> > sortedWhereClauses;
+        for (auto it = sortedIndices.rbegin(); it != sortedIndices.rend(); ++it) {
+            sortedWhereClauses.push_back(std::move(whereClauses[*it]));
+        }
+
+        return sortedWhereClauses;
     }
 
 private:
-    const std::vector<let_token> &let_tokens_;
+    std::vector<let_token> tokens_;
     std::size_t pos_;
+    std::unordered_set<std::string> knownConstants;
 };
+
+#endif // PARSELET_H

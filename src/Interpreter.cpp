@@ -75,6 +75,14 @@ void Interpreter::handle_unknown(const ForthToken &first) {
 
 // Main entry point for interpreting Forth code
 void Interpreter::execute(const std::string &input) {
+
+    // Check if the input contains "LET"
+    if (input.find("LET") != std::string::npos) {
+        Compiler::instance().compile_let(input);
+        return;
+    }
+
+
     std::deque<ForthToken> tokens;
 
     // Tokenize the input into Forth tokens

@@ -3,11 +3,112 @@
 #include <iostream>
 #include "ControlFlow.h"
 #include "CodeGenerator.h"
+#include  "LetCodeGenerator.h"
 #include "Tokenizer.h"
 #include "Optimizer.h"
 
 #include "SignalHandler.h"
 #include "Settings.h"
+
+LetCodeGenerator generator;
+
+void Compiler::compile_let(const std::string &input) {
+
+    std::cout << "Compiling LET statement: " << input << std::endl;
+    // Look for ": " to identify the start of a function definition name
+    size_t colonPos = input.find(": ");
+    if (colonPos == std::string::npos) {
+        std::cerr << ("Syntax error: Expected ': <function_name>' in LET statement");
+    }
+
+    // Extract the function name, which is the word immediately after ": "
+    size_t nameStart = colonPos + 2; // Skip past ": "
+    size_t nameEnd = input.find(' ', nameStart); // Find the next space to isolate the name
+
+    // Check if a name exists after ": "
+    if (nameStart == std::string::npos || nameStart >= input.size()) {
+        std::cerr << ("Syntax error: Missing function name after ':'");
+    }
+
+    std::string functionName = input.substr(nameStart, nameEnd - nameStart);
+
+    // Validate the extracted name if necessary
+    if (functionName.empty()) {
+         std::cerr << ("Syntax error: Function name cannot be empty");
+    }
+
+    // step 3
+    size_t letPos = input.find("LET");
+    if (letPos == std::string::npos) {
+        std::cerr << "Syntax error: Expected 'LET' in the statement";
+        return; // Exit if "LET" is not found
+    }
+
+
+    // Step 2: Remove everything before "LET"
+    std::string letString = input.substr(letPos);
+    std::transform(letString.begin(), letString.end(), letString.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+
+    code_generator_startFunction(functionName);
+
+    const auto tokens = tokenize(letString);
+    Parser parser(tokens);
+    const auto ast = parser.parseLetStatement();
+
+    parser.printAST(ast.get());
+
+    if (functionName.length() > 16) {
+        std::cerr << "Function name too long: " << functionName << std::endl;
+        functionName = functionName.substr(0, 16);
+        std::cout << "Truncated name to:" << functionName << std::endl;
+    }
+
+
+    // some c++ classes used by the generator may raise horrid exceptions.
+
+    try {
+
+        generator.generate(*ast);
+
+
+    } catch (const std::out_of_range &e) {
+        // Specific exception for missing keys in an unordered map
+        std::cerr << "Out of range exception: " << e.what() << std::endl;
+
+        // Key debugging - Log context of the exception
+        std::cerr << "Debugging map error: Possible missing key in unordered_map." << std::endl;
+        // generator.printRegisterMaps();
+
+
+        SignalHandler::instance().raise(22);
+
+    } catch (const std::exception &e) {
+        // Handle standard exceptions
+        std::cerr << "An error occurred: " << e.what() << std::endl;
+        SignalHandler::instance().raise(22);
+
+    } catch (...) {
+        // Handle any other types of exceptions
+        std::cerr << "An unknown error occurred during code generation." << std::endl;
+        SignalHandler::instance().raise(22);
+    }
+
+
+
+    compile_return();
+    const ForthFunction f = code_generator_finalizeFunction(functionName);
+    //
+    auto &dict = ForthDictionary::instance();
+    dict.addCodeWord(functionName, "FORTH",
+                    ForthState::EXECUTABLE,
+                    ForthWordType::WORD,
+                    nullptr,
+                    f,
+                    nullptr);
+
+
+}
 
  
 void Compiler::compile_words(std::deque<ForthToken> &input_tokens) {

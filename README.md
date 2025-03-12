@@ -11,8 +11,9 @@ I act as project manager, coordinator, and agent for the LLM.
 
 The LLM writes the code, although I have to help out quite a bit.
 
+I just want to say to 03-Mini-High: "Learn to code."
 
-This is a major restart from the Windows version, designed to be less fragile and hopefully maintainable.
+This version is a major restart from the Windows version, designed to be less fragile and hopefully maintainable.
 
 Apart from the adaptions to Unix, once mature, I will port this back to Windows and eventually to ARM.
 I happen to own old Intel Mac systems right now.
@@ -24,7 +25,8 @@ ASMJIT can be installed using brew on the Mac.
 
 My plan is to create a happy, less crash prone, fun, interactive FORTH dialect, hook it up to SDL2 and write a cross platform moon bugs game, target date: 2027.
 
-FORTH on 64 bit supercomputers, is a bit interesting, so I am exploring that whole concept.
+FORTH on 64 bit supercomputers (like the average laptop or phone), is a bit interesting, so I am exploring that whole concept.
 
+Meanwhile: I have recently spent a lot of time adding an infix expression parser that aims to generate efficient floating point code, some day, soon.
 
 

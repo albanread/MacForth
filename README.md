@@ -16,9 +16,11 @@ I just want to say to 03-Mini-High: "Learn to code."
 This version is a major restart from the Windows version, designed to be less fragile and hopefully maintainable.
 
 Apart from the adaptions to Unix, once mature, I will port this back to Windows and eventually to ARM.
+
 I happen to own old Intel Mac systems right now.
 
 I develop this on macOS Ventura, with xcode command line tools, and CLion.
+
 This is a CMAKE project.
 
 ASMJIT can be installed using brew on the Mac.

@@ -1,32 +1,35 @@
-## Dictionary
- ```mermaid
-graph TD;
-    subgraph Dictionary Organization
-        A["dictionaryLists (word length 0..16)"]
-        B["wordOrder (insertion order)"]
-        A -->|Links by word length| C["ForthDictionaryEntry A"]
-        A -->|Links by word length| D["ForthDictionaryEntry B"]
-        A -->|Links by word length| E["ForthDictionaryEntry C"]
-        B -->|Tracks order| C
-        B -->|Tracks order| D
-        B -->|Tracks order| E
-    end
-    
-    C -->|Previous Entry| F["ForthDictionaryEntry (Previous)"]
-    D -->|Previous Entry| C
-    E -->|Previous Entry| D
-```
-```mermaid
-graph TD;
-    subgraph ForthDictionaryEntry
-        A["ForthDictionaryEntry"]
-        A -->|word_id, vocab_id| B["Symbol Table"]
-        A -->|executable| C["Executable Function"]
-        A -->|generator| D["Generator Function"]
-        A -->|immediate_interpreter| E["Immediate Interpreter"]
-        A -->|immediate_compiler| F["Immediate Compiler"]
-        A -->|data| G["Heap Data"]
-    end
++-------------------------------+
+|  ForthDictionaryEntry         |
++-------------------------------+
+| *previous (linked list)       |  <-- Points to previous entry
+| word_id (Symbol Table ID)     |
+| vocab_id (Vocabulary ID)      |
+| state (ForthState)            |
+| *executable (Function Ptr)    |  <-- Code execution
+| *generator (Function Ptr)     |  <-- Custom word creation
+| *immediate_interpreter (Ptr)  |  <-- Immediate word behavior
+| *immediate_compiler (Ptr)     |  <-- Compile-time behavior
+| *data (Heap Ptr)              |  <-- Associated data storage
+| *firstWordInVocabulary        |  <-- Linked list by vocabulary
++-------------------------------+
 
-    B -->|Maps IDs to Names| H["'DUP', 'SWAP'"]
-```
+        Dictionary Organization:
+
+        +-----------------------------+
+        | dictionaryLists (Array)      |  <-- Indexed by word length (0..16)
+        | [ * ][ * ][ * ][ * ] ...     |
+        +-----------------------------+
+
+        +-----------------------------+
+        | wordOrder (Vector)           |  <-- Ordered list of all words added
+        | [ * ][ * ][ * ][ * ] ...     |
+        +-----------------------------+
+
+    ┌───────────────────────────────────────────────┐
+    │  Symbol Table (Stores Word & Vocabulary Names) │
+    ├──────────────┬───────────────────────────────┤
+    │ word_id      │  "DUP"                         │
+    │ word_id      │  "SWAP"                        │
+    │ vocab_id     │  "CORE"                        │
+    │ vocab_id     │  "MATH"                        │
+    └──────────────┴───────────────────────────────┘

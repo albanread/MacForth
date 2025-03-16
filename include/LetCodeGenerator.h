@@ -55,6 +55,10 @@ public:
     void initialize();
     void generateCode(const ASTNode *node);
 
+    void saveGPcache(asmjit::x86::Assembler *assembler);
+
+    void restoreGPCache(asmjit::x86::Assembler *assembler);
+
     /// Emit code for setting up the spill slot base
     static void setupSpillSlotBase();
 
@@ -117,6 +121,7 @@ private:
     std::unordered_map<const Expression*, std::string> expressionNameMap;
     /// Register tracker reference
     RegisterTracker &tracker = RegisterTracker::instance();
+    bool debug = false;
 };
 
 #endif // LETCODEGENERATOR_H

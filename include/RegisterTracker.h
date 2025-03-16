@@ -301,6 +301,7 @@ public:
         }
 
         if (cacheToGP && !freeGpCache.empty()) {
+            gpCacheUsed = true;
             asmjit::x86::Gp gpReg = createGPFromVarName(varName); // Assign the register to spilledVar in the map.
             freeGpCache[spilledVar] = gpReg.id(); // Use unordered_map to store associations.
 
@@ -330,10 +331,6 @@ public:
 
         return allocateRegister(varName);
     }
-
-
-
-
 
 
     /** Reloads a spilled variable back into a register */
@@ -372,6 +369,9 @@ public:
         for (const auto &entry: freeGpCache) {
             debugMessage("Variable: " + entry.first + " -> GP Register: " + GPregToStr(entry.second));
         }
+        // New Debug Message: GP Cache Status
+        debugMessage("GP Cache Usage: " + std::string(gpCacheUsed ? "Yes" : "No"));
+
         debugMessage("============================");
     }
 
@@ -382,6 +382,10 @@ public:
 
     void setConstant(const std::string &varName) {
         constantValues.insert(varName);
+    }
+
+    [[nodiscard]] bool wasGpCacheUsed() const {
+        return gpCacheUsed;
     }
 
     void enableGpCache() {
@@ -414,6 +418,7 @@ public:
     }
 
 private:
+    bool gpCacheUsed = false;
     bool cacheToGP = false;
     bool LRU = false;
     std::unordered_map<std::string, int> registerMap;
@@ -443,7 +448,7 @@ private:
 
     /** Centralized debug message handler */
     static void debugMessage(const std::string &msg) {
-        if (jitLogging) {
+        if (false) {
             std::cerr << "[DEBUG] " << msg << std::endl;
         }
     }

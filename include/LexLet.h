@@ -49,7 +49,7 @@ constexpr bool isPunctuationChar(char c) {
 }
 
 inline std::vector<let_token> tokenize(const std::string &input) {
-    std::cout << "input: " << input << std::endl;
+    // std::cout << "input: " << input << std::endl;
 
     static const std::unordered_map<std::string, let_token_type> keywords = {
         {"LET", let_token_type::KEYWORD},

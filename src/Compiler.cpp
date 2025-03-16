@@ -10,7 +10,7 @@
 #include "SignalHandler.h"
 #include "Settings.h"
 
-LetCodeGenerator generator;
+
 
 void Compiler::compile_let(const std::string &input) {
 
@@ -69,7 +69,11 @@ void Compiler::compile_let(const std::string &input) {
 
     try {
 
-        generator.generate(*ast);
+
+        LetCodeGenerator::instance().initialize();
+
+        LetCodeGenerator::instance().generateCode(ast.get());
+
 
 
     } catch (const std::out_of_range &e) {

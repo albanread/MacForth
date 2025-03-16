@@ -50,7 +50,8 @@ private:
         "Label Manager error.", // 21
         "LET statement generator error." , // 22
         "LET statement Lexer error.", // 23
-        "LET statement Parser error." // 24
+        "LET statement Parser error.", // 24
+        "Register Tracker error" // 25
     };
 
     // Jump buffer for longjmp

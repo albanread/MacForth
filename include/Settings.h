@@ -1,6 +1,9 @@
 #ifndef SETTINGS_H
 #define SETTINGS_H
 
+#include <deque>
+#include "Tokenizer.h"
+
 inline bool print_stack = false;
 inline bool optimizer;
 inline bool jitLogging = false;

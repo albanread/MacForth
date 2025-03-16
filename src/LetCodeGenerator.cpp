@@ -19,18 +19,42 @@ void LetCodeGenerator::generateCode(const ASTNode *node) {
     printRegisterUsage();
 }
 
+void LetCodeGenerator::saveGPcache(asmjit::x86::Assembler *assembler) {
+    assembler->comment("; -- save R12-R15 for GP cache");
+    assembler->push(asmjit::x86::r12);
+    assembler->push(asmjit::x86::r13);
+    assembler->push(asmjit::x86::r14);
+    assembler->push(asmjit::x86::r15);
+}
+
+void LetCodeGenerator::restoreGPCache(asmjit::x86::Assembler *assembler) {
+    // restore GP cache
+    assembler->comment("; -- restore R12-R15 for GP cache");
+    assembler->pop(asmjit::x86::r15);
+    assembler->pop(asmjit::x86::r14);
+    assembler->pop(asmjit::x86::r13);
+    assembler->pop(asmjit::x86::r12);
+}
+
 void LetCodeGenerator::generateLetStatement(const LetStatement *letStmt) {
     if (!letStmt) return;
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
+
     // Code generation logic for LET statement
-    std::cerr << "// Input Parameters\n";
-    tracker.disableGpCache();
-    tracker.enableLRU();
+    if (debug) std::cerr << "// Input Parameters\n";
+
+    if (GPCACHE) {
+        tracker.enableGpCache();
+    }
+
+    if (TrackLRU) {
+        tracker.enableLRU();
+    }
 
     for (auto it = letStmt->inputParams.rbegin(); it != letStmt->inputParams.rend(); ++it) {
         const auto &param = *it;
-        std::cerr << "LOAD_PARAM " << param << "\n";
+        if (debug) std::cerr << "LOAD_PARAM " << param << "\n";
         auto reg = tracker.allocateRegister(param);
         tracker.setConstant(param); // never changes once loaded.
         assembler->commentf("; Load variable from FORTH stack: %s", param.c_str());
@@ -41,31 +65,40 @@ void LetCodeGenerator::generateLetStatement(const LetStatement *letStmt) {
         assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15)); // Move TOS-2 into TOS-1
         assembler->add(asmjit::x86::r15, 8); // Adjust stack pointer
     }
-
-    // assembler->comment("; -- save R12-R15 for GP cache");
-    // assembler->push(asmjit::x86::r12);
-    // assembler->push(asmjit::x86::r13);
-    // assembler->push(asmjit::x86::r14);
-    // assembler->push(asmjit::x86::r15);
-
-
-
-    std::cerr << "// WHERE Clauses\n";
-    for (const auto &wc: letStmt->whereClauses) {
-        generateWhereClause(wc.get());
-
-
+    // after loading we save
+    if (GPCACHE) {
+        saveGPcache(assembler);
     }
 
-    std::cerr << "// Expressions\n";
+
+    if (debug) std::cerr << "// WHERE Clauses\n";
+    for (const auto &wc: letStmt->whereClauses) {
+        generateWhereClause(wc.get());
+    }
+
+    if (debug) std::cerr << "// Expressions\n";
     size_t numExprs = letStmt->expressions.size();
     for (size_t i = numExprs; i-- > 0;) {
         Expression *expr = letStmt->expressions[i].get();
         generateExpression(expr);
-        std::cerr << "STORE_VAR " << letStmt->outputVars[i] << "\n";
+        if (debug) std::cerr << "STORE_VAR " << letStmt->outputVars[i] << "\n";
         auto name = getUniqueTempName(expr);
-        std::cerr << "EXPR NAME: " << name << "\n";
+        if (debug) std::cerr << "EXPR NAME: " << name << "\n";
         asmjit::x86::Xmm exprReg = tracker.allocateRegister(name);
+        assembler->commentf("; spilling result: %d", exprReg.id());
+        tracker.setConstant(name);
+    }
+
+    if (GPCACHE) {
+        restoreGPCache(assembler);
+    }
+
+    // save to forth stack at the end
+    for (size_t i = numExprs; i-- > 0;) {
+        const Expression *expr = letStmt->expressions[i].get();
+        auto name = getUniqueTempName(expr);
+        if (debug) std::cerr << "Save to stack: " << name << "\n";
+        asmjit::x86::Xmm exprReg = tracker.allocateRegister(name); // will reload.
         assembler->commentf("; Pushing result of '%s' onto stack", letStmt->outputVars[i].c_str());
         assembler->sub(asmjit::x86::r15, 8); // Allocate space on the stack
         assembler->mov(asmjit::x86::ptr(asmjit::x86::r15), asmjit::x86::r12);
@@ -73,25 +106,17 @@ void LetCodeGenerator::generateLetStatement(const LetStatement *letStmt) {
         assembler->movq(asmjit::x86::r13, exprReg);
     }
 
-    // restore RDI
+    // restore RDI last
     assembler->pop(asmjit::x86::rdi);
-    // restore GP cache
-    // assembler->comment("; -- restore R12-R15 for GP cache");
-    // assembler->pop(asmjit::x86::r15);
-    // assembler->pop(asmjit::x86::r14);
-    // assembler->pop(asmjit::x86::r13);
-    // assembler->pop(asmjit::x86::r12);
-
-
 }
 
 void LetCodeGenerator::generateWhereClause(const WhereClause *wc) {
     if (!wc) return;
 
-    std::cerr << wc->varName << " = ";
+    if (debug) std::cerr << wc->varName << " = ";
     generateExpression(wc->expr.get());
 
-    asmjit::x86::Assembler* assembler;
+    asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     asmjit::x86::Xmm varReg = tracker.allocateRegister(wc->varName);
 
@@ -100,13 +125,14 @@ void LetCodeGenerator::generateWhereClause(const WhereClause *wc) {
     if (exprReg.id() != varReg.id()) {
         assembler->movaps(varReg, exprReg);
     }
+    // frees the exprReg after moving to varReg
     tracker.freeRegister(exprName);
-    std::cerr << "[DEBUG] WHERE variable '" << wc->varName
-              << "' stored in register xmm" << varReg.id() << "\n";
+    if (debug)
+        std::cerr << "[DEBUG] WHERE variable '" << wc->varName
+                << "' stored in register xmm" << varReg.id() << "\n";
 
 
-
-    std::cerr << "// End WHERE Clause\n";
+    if (debug) std::cerr << "// End WHERE Clause\n";
 }
 
 void LetCodeGenerator::generateExpression(Expression *expr) {
@@ -130,16 +156,15 @@ void LetCodeGenerator::generateExpression(Expression *expr) {
             generateUnaryOpExpr(expr);
             break;
         default:
-            std::cerr << "Unknown expression type in generateExpression.\n";
+            if (debug) std::cerr << "Unknown expression type in generateExpression.\n";
     }
 }
 
-void LetCodeGenerator::generateLiteralExpr(const Expression* expr) {
-
+void LetCodeGenerator::generateLiteralExpr(const Expression *expr) {
     commentOnExpression(expr);
     // Ensure the expression is valid and of type Literal
     if (!expr || expr->type != ExprType::LITERAL) {
-        std::cerr << "[ERROR] Attempted to generate code for a non-literal expression.\n";
+        if (debug) std::cerr << "[ERROR] Attempted to generate code for a non-literal expression.\n";
         return;
     }
 
@@ -155,8 +180,8 @@ void LetCodeGenerator::generateLiteralExpr(const Expression* expr) {
     // Insert the constant into constant tracking
     tracker.setConstant(constName);
 
-    asmjit::x86::Assembler* assembler;
-    initialize_assembler(assembler);  // Ensure assembler is initialized.
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler); // Ensure assembler is initialized.
 
     // Allocate a register for this constant through the tracker
     asmjit::x86::Xmm xmmReg = tracker.allocateRegister(constName);
@@ -168,38 +193,41 @@ void LetCodeGenerator::generateLiteralExpr(const Expression* expr) {
     assembler->movq(xmmReg, asmjit::x86::rax);
 
     // Emit debug output for the allocation
-    std::cerr << "[DEBUG] Allocated register " << tracker.xmmRegToStr(xmmReg.id())
-              << " for constant value: " << literalValue << "\n";
+    if (debug)
+        std::cerr << "[DEBUG] Allocated register " << tracker.xmmRegToStr(xmmReg.id())
+                << " for constant value: " << literalValue << "\n";
 
     // Emit code to load the constant into the allocated register
-    std::cerr << "LOAD_CONST " << constName << " = " << literalValue << "\n";
+    if (debug) std::cerr << "LOAD_CONST " << constName << " = " << literalValue << "\n";
 }
 
 void LetCodeGenerator::generateVariableExpr(const Expression *expr) {
     // Check if the given expression is a constant
-    asmjit::x86::Assembler* assembler;
-    initialize_assembler(assembler);  // Ensure assembler is initialized.
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler); // Ensure assembler is initialized.
     std::string argName = getUniqueTempName(expr);
     asmjit::x86::Xmm xmmReg = tracker.allocateRegister(argName);
     std::string varName = expr->value;
-    std::cerr << "LOAD_VAR " << varName << "\n";
+    if (debug) std::cerr << "LOAD_VAR " << varName << "\n";
     asmjit::x86::Xmm xmmRegSrc = tracker.allocateRegister(varName);
-    if ( xmmReg.id() != xmmRegSrc.id() ) {
+    if (xmmReg.id() != xmmRegSrc.id()) {
         assembler->movaps(xmmReg, xmmRegSrc);
     }
+    // must not free argName, can free varName, but seems wrong :)
+    // tracker.freeRegister(varName);
 }
 
 
 void LetCodeGenerator::commentOnExpression(const Expression *expr) {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
-    std::string sourceText = "; evaluating: "+ expressionToText(expr);
+    std::string sourceText = "; evaluating: " + expressionToText(expr);
     assembler->comment(sourceText.c_str());
 }
 
 void LetCodeGenerator::generateFunctionExpr(const Expression *expr) {
     if (!expr) {
-        std::cerr << "Error: Null expression passed to generateFunctionExpr.\n";
+        if (debug) std::cerr << "Error: Null expression passed to generateFunctionExpr.\n";
         return;
     }
     commentOnExpression(expr);
@@ -210,13 +238,13 @@ void LetCodeGenerator::generateFunctionExpr(const Expression *expr) {
 
     // Ensure the expression has children (arguments to the function)
     if (expr->children.empty()) {
-        std::cerr << "Error: Function " << funcName << " called with no arguments.\n";
+        if (debug) std::cerr << "Error: Function " << funcName << " called with no arguments.\n";
         SignalHandler::instance().raise(22); // Error signal
         return;
     }
 
     // A mapping from variable names to allocated registers for freeing later
-    std::vector<std::pair<std::string, asmjit::x86::Xmm>> argNameToReg;
+    std::vector<std::pair<std::string, asmjit::x86::Xmm> > argNameToReg;
 
     // Generate code for child expressions (function arguments).
     for (size_t i = 0; i < expr->children.size(); ++i) {
@@ -239,8 +267,9 @@ void LetCodeGenerator::generateFunctionExpr(const Expression *expr) {
     } else if (argNameToReg.size() == 2) {
         callMathFunction(funcName, argNameToReg[0].second, argNameToReg[1].second); // Two arguments
     } else {
-        std::cerr << "Error: The function " << funcName
-                  << " requires one or two arguments, but received " << argNameToReg.size() << ".\n";
+        if (debug)
+            std::cerr << "Error: The function " << funcName
+                    << " requires one or two arguments, but received " << argNameToReg.size() << ".\n";
         SignalHandler::instance().raise(22); // Error signal
     }
     auto name = getUniqueTempName(expr);
@@ -249,34 +278,32 @@ void LetCodeGenerator::generateFunctionExpr(const Expression *expr) {
     if (exprReg.id() != 0) {
         assembler->movaps(exprReg, asmjit::x86::xmm0); // Capture
     }
-    // Free the registers using the names assigned to the tracker
-    for (const auto &pair : argNameToReg) {
+    // Frees the registers for the argument names.
+    for (const auto &pair: argNameToReg) {
         RegisterTracker::instance().freeRegister(pair.first); // Free register by its variable name
     }
 }
 
 
-
 void LetCodeGenerator::generateUnaryOpExpr(const Expression *expr) {
-
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     commentOnExpression(expr);
     // Validate the input expression
     if (!expr) {
-        std::cerr << "Error: Null expression passed to generateUnaryOpExpr." << std::endl;
+        if (debug) std::cerr << "Error: Null expression passed to generateUnaryOpExpr." << std::endl;
         return;
     }
 
     // Ensure the expression type is unary
     if (expr->type != ExprType::UNARY_OP) {
-        std::cerr << "Error: Expression type is not a unary operation." << std::endl;
+        if (debug) std::cerr << "Error: Expression type is not a unary operation." << std::endl;
         return;
     }
 
     // Ensure there is a child expression
     if (expr->children.empty()) {
-        std::cerr << "Error: Unary operation requires one operand." << std::endl;
+        if (debug) std::cerr << "Error: Unary operation requires one operand." << std::endl;
         return;
     }
 
@@ -292,10 +319,11 @@ void LetCodeGenerator::generateUnaryOpExpr(const Expression *expr) {
 
     // Allocate registers for the child and this expression
     asmjit::x86::Xmm childReg = tracker.allocateRegister(childTmpName);
-    asmjit::x86::Xmm exprReg =  tracker.allocateRegister(exprTmpName);
+    asmjit::x86::Xmm exprReg = tracker.allocateRegister(exprTmpName);
 
     // Check the value of the unary operation
-    if (expr->value == "neg") { // Handle negation
+    if (expr->value == "neg") {
+        // Handle negation
         assembler->comment("; Unary negation");
 
         // Move the child result into exprReg if needed
@@ -308,33 +336,33 @@ void LetCodeGenerator::generateUnaryOpExpr(const Expression *expr) {
         emitLoadDoubleLiteral("0.0", zeroReg);
 
         // Perform the negation operation (exprReg = 0.0 - child)
-        assembler->subsd(exprReg, exprReg);  // exprReg = exprReg - exprReg => 0.0
+        assembler->subsd(exprReg, exprReg); // exprReg = exprReg - exprReg => 0.0
         assembler->subsd(exprReg, childReg); // exprReg = 0.0 - childReg => -childReg
         tracker.freeRegister("_zero");
-
+        tracker.freeRegister(childTmpName); // test
     } else {
         // Unknown unary operator
-        std::cerr << "Unknown unary operator: " << expr->value << std::endl;
+        if (debug) std::cerr << "Unknown unary operator: " << expr->value << std::endl;
         SignalHandler::instance().raise(22); // Raise signal for unknown operator
     }
 }
 
- void LetCodeGenerator::generateBinaryOpExpr(Expression *expr) {
+void LetCodeGenerator::generateBinaryOpExpr(Expression *expr) {
     // Validate input expression
     if (!expr) {
-        std::cerr << "Error: Null expression passed to generateBinaryOpExpr." << std::endl;
+        if (debug) std::cerr << "Error: Null expression passed to generateBinaryOpExpr." << std::endl;
         return;
     }
     commentOnExpression(expr);
     // Ensure the expression type is a binary operation
     if (expr->type != ExprType::BINARY_OP) {
-        std::cerr << "Error: Expression type is not a binary operation." << std::endl;
+        if (debug) std::cerr << "Error: Expression type is not a binary operation." << std::endl;
         return;
     }
 
     // Ensure there are at least two children (lhs and rhs)
     if (expr->children.size() < 2) {
-        std::cerr << "Error: Binary operation requires two operands (lhs, rhs)." << std::endl;
+        if (debug) std::cerr << "Error: Binary operation requires two operands (lhs, rhs)." << std::endl;
         return;
     }
 
@@ -391,7 +419,6 @@ void LetCodeGenerator::setupSpillSlotBase() {
 }
 
 void LetCodeGenerator::emitLoadDoubleLiteral(const std::string &literalString, asmjit::x86::Xmm destReg) {
-
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
 
@@ -406,14 +433,12 @@ void LetCodeGenerator::printRegisterUsage() const {
 
 
 void LetCodeGenerator::preserveAndCallFunction(void *func) {
-
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
 
     assembler->push(asmjit::x86::rdi); // Preserve rdi register
     assembler->call(asmjit::imm(func)); // Call the math function
     assembler->pop(asmjit::x86::rdi); // Restore rdi register
-
 }
 
 
@@ -424,7 +449,6 @@ void LetCodeGenerator::emitExponentiation(asmjit::x86::Xmm exprReg,
     initialize_assembler(assembler);
 
     assembler->comment("; Exponentiation");
-
 
 
     // Load constant 2.0 into a register
@@ -497,13 +521,11 @@ std::unordered_map<std::string, DualFunctionPtr> DualFuncMap = {
 };
 
 
-
-
 void LetCodeGenerator::callMathFunction(const std::string &funcName, const asmjit::x86::Xmm &arg1Reg,
                                         const asmjit::x86::Xmm &arg2Reg) {
     asmjit::x86::Assembler *assembler = nullptr; // Ensure assembler pointer initialized
     if (initialize_assembler(assembler)) {
-        std::cerr << "Failed to initialize assembler in callMathFunction." << std::endl;
+        if (debug) std::cerr << "Failed to initialize assembler in callMathFunction." << std::endl;
         return;
     }
 
@@ -513,14 +535,15 @@ void LetCodeGenerator::callMathFunction(const std::string &funcName, const asmji
     auto singleIt = SingleFuncMap.find(funcName);
     if (singleIt != SingleFuncMap.end()) {
         if (!arg1Reg.isValid()) {
-            std::cerr << "Invalid register for argument 1 in single-argument function: "
-                    << funcName << std::endl;
+            if (debug)
+                std::cerr << "Invalid register for argument 1 in single-argument function: "
+                        << funcName << std::endl;
             SignalHandler::instance().raise(22); // Error signal
             return;
         }
         tracker.spillRegisters(); // spill any low caller save registers
         assembler->movaps(asmjit::x86::xmm0, arg1Reg); // Move arg1 to xmm0
-        preserveAndCallFunction( reinterpret_cast<void*>(singleIt->second));
+        preserveAndCallFunction(reinterpret_cast<void *>(singleIt->second));
         return;
     }
 
@@ -528,22 +551,23 @@ void LetCodeGenerator::callMathFunction(const std::string &funcName, const asmji
     auto dualIt = DualFuncMap.find(funcName);
     if (dualIt != DualFuncMap.end()) {
         if (!arg1Reg.isValid() || !arg2Reg.isValid()) {
-            std::cerr << "Dual-argument function requires two"
-                         " valid arguments: "
-                    << funcName << std::endl;
+            if (debug)
+                std::cerr << "Dual-argument function requires two"
+                        " valid arguments: "
+                        << funcName << std::endl;
             SignalHandler::instance().raise(22); // Error signal
             return;
         }
 
         assembler->movaps(asmjit::x86::xmm0, arg1Reg); // Move arg1 to xmm0
         assembler->movaps(asmjit::x86::xmm1, arg2Reg); // Move arg2 to xmm1
-        preserveAndCallFunction( reinterpret_cast<void*>(dualIt->second));
+        preserveAndCallFunction(reinterpret_cast<void *>(dualIt->second));
 
         return;
     }
 
     // Unknown function
-    std::cerr << "Unknown function: " << funcName << ". Check function maps." << std::endl;
+    if (debug) std::cerr << "Unknown function: " << funcName << ". Check function maps." << std::endl;
     SignalHandler::instance().raise(22); // Error signal
 }
 
@@ -593,10 +617,9 @@ void LetCodeGenerator::emitBinaryOperation(const std::string &op,
                                            const asmjit::x86::Xmm &rhsReg,
                                            [[maybe_unused]] Expression *lhsExpr,
                                            [[maybe_unused]] Expression *rhsExpr) {
-
     asmjit::x86::Assembler *assembler = nullptr; // Explicit initialization
     if (initialize_assembler(assembler)) {
-        std::cerr << "Failed to initialize assembler in emitBinaryOperation." << std::endl;
+        if (debug) std::cerr << "Failed to initialize assembler in emitBinaryOperation." << std::endl;
         return;
     }
 
@@ -614,10 +637,11 @@ void LetCodeGenerator::emitBinaryOperation(const std::string &op,
     } else if (op == "^") {
         emitExponentiation(exprReg, lhsReg, rhsReg); // Exponentiation logic
     } else {
-        std::cerr << "Unsupported binary operator: " << op
-                  << " [exprReg: " << exprReg.id()
-                  << ", lhsReg: " << lhsReg.id()
-                  << ", rhsReg: " << rhsReg.id() << "]" << std::endl;
+        if (debug)
+            std::cerr << "Unsupported binary operator: " << op
+                    << " [exprReg: " << exprReg.id()
+                    << ", lhsReg: " << lhsReg.id()
+                    << ", rhsReg: " << rhsReg.id() << "]" << std::endl;
         SignalHandler::instance().raise(22);
     }
 }
@@ -676,11 +700,10 @@ std::string LetCodeGenerator::expressionToString(const Expression *expr) {
         }
 
         default:
-            std::cerr << "Warning: Unknown expression type encountered in expressionToString." << std::endl;
+            if (debug) std::cerr << "Warning: Unknown expression type encountered in expressionToString." << std::endl;
             return "<unknown expression>";
     }
 }
-
 
 
 std::string LetCodeGenerator::getUniqueTempName(const Expression *expr) {
@@ -695,7 +718,7 @@ std::string LetCodeGenerator::getUniqueTempName(const Expression *expr) {
     }
 
     // Hash the pointer to generate a unique value
-    auto hashValue = std::hash<const Expression*>()(expr);
+    auto hashValue = std::hash<const Expression *>()(expr);
 
     // Create a human-readable and unique name
     std::ostringstream nameStream;
@@ -704,23 +727,23 @@ std::string LetCodeGenerator::getUniqueTempName(const Expression *expr) {
     switch (expr->type) {
         case ExprType::LITERAL:
             nameStream << "Const_" << expr->value; // Assuming Expression has a "value" field
-        break;
+            break;
 
         case ExprType::VARIABLE:
             nameStream << "Var_" << expr->value; // Assuming Expression has a "variableName" field
-        break;
+            break;
 
         case ExprType::FUNCTION:
             nameStream << "FuncCall_" << expr->value; // Assuming Expression has a "functionName" field
-        break;
+            break;
 
         case ExprType::BINARY_OP:
             nameStream << "BinaryOp_" << expr->value; // Assuming the operator is stored in `op`
-        break;
+            break;
 
         case ExprType::UNARY_OP:
             nameStream << "UnaryOp_" << expr->value; // Assuming the operator is stored in `op`
-        break;
+            break;
 
         default:
             nameStream << "Expr_UnknownType";
@@ -737,7 +760,7 @@ std::string LetCodeGenerator::getUniqueTempName(const Expression *expr) {
 }
 
 
-std::string LetCodeGenerator::expressionToText(const Expression* expr) {
+std::string LetCodeGenerator::expressionToText(const Expression *expr) {
     if (!expr) {
         return "<null>";
     }
@@ -763,7 +786,7 @@ std::string LetCodeGenerator::expressionToText(const Expression* expr) {
             return "(" + left + " " + expr->value + " " + right + ")";
         }
 
-        case ExprType::FUNCTION:{
+        case ExprType::FUNCTION: {
             // Recursive case: For functions like "pow", "sqrt", etc.
             std::string args;
             for (size_t i = 0; i < expr->children.size(); ++i) {

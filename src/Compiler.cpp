@@ -14,8 +14,8 @@
 
 void Compiler::compile_let(const std::string &input) {
 
-    std::cout << "Compiling LET statement: " << input << std::endl;
-    // Look for ": " to identify the start of a function definition name
+    if (jitLogging) std::cout << "Compiling LET statement: " << input << std::endl;
+
     size_t colonPos = input.find(": ");
     if (colonPos == std::string::npos) {
         std::cerr << ("Syntax error: Expected ': <function_name>' in LET statement");
@@ -56,7 +56,7 @@ void Compiler::compile_let(const std::string &input) {
     Parser parser(tokens);
     const auto ast = parser.parseLetStatement();
 
-    parser.printAST(ast.get());
+    if ( jitLogging) parser.printAST(ast.get());
 
     if (functionName.length() > 16) {
         std::cerr << "Function name too long: " << functionName << std::endl;

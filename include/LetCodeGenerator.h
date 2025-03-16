@@ -1,147 +1,122 @@
-#ifndef LET_CODE_GENERATOR_H
-#define LET_CODE_GENERATOR_H
+#ifndef LETCODEGENERATOR_H
+#define LETCODEGENERATOR_H
 
-#include <asmjit/asmjit.h>
+#include <string>
 #include <iostream>
 #include <unordered_map>
-#include <string>
 #include <map>
-#include "ParseLet.h" // AST definitions: LetStatement, Expression, etc.
+#include "ParseLet.h" // Include your AST definitions here
+#include "Singleton.h" // Include the Singleton template class
+#include <sstream>
+#include "RegisterTracker.h"
 
 
-// Fixed-size static global memory pool (per thread)
-static constexpr size_t GLOBAL_MEMORY_SIZE = 64 * 1024; // 64 KB memory pool
-inline thread_local uint8_t gGlobalStaticMemory[GLOBAL_MEMORY_SIZE];
+/**
+ * LetCodeGenerator Responsibilities:
+ * ----------------------------------
+ * 1. Request Resources:
+ *    - Asks the RegisterTracker to allocate and free registers as needed.
+ *    - Allocates registers tied to specific expressions (using unique names).
+ *
+ * 2. Emit Code:
+ *    - Emits assembly instructions for expressions using asmjit.
+ *    - Handles intermediate computations and writes output to registers.
+ *
+ * 3. Manage Temporary Registers:
+ *    - Handles allocation and freeing of temporary registers (e.g., for constants like 0.0).
+ *    - Ensures all registers are released once their purpose is served.
+ *
+ * 4. Debugging and Comments:
+ *    - Adds human-readable comments in the generated code for debugging purposes.
+ *    - Provides clear tracking of register usage.
+ *
+ * 5. Error Handling:
+ *    - Ensures invalid inputs (e.g., null pointers, unknown operators) are caught and handled gracefully.
+ *
+ * Responsibilities the LetCodeGenerator does *NOT* handle:
+ * -------------------------------------------------------
+ * 1. Managing the Register Pool:
+ *    - It does not decide the total number of registers or handle register spilling.
+ *      These are handled by the RegisterTracker.
+ * 2. Resource Lifetimes Beyond the Current Scope:
+ *    - Register cleanup is the generator’s job for the expressions it processes.
+ *
+ * In short, LetCodeGenerator ensures that registers are allocated, used, and freed
+ * during code generation, while delegating tracking and management tasks to the
+ * RegisterTracker.
+ */
 
 
-class LetCodeGenerator {
+class LetCodeGenerator : public Singleton<LetCodeGenerator> {
+    friend class Singleton<LetCodeGenerator>; // Allow Singleton to construct LetCodeGenerator instances
+
 public:
-    LetCodeGenerator() : globalMemory(nullptr) {
-    }
+    // Public methods
+    void initialize();
+    void generateCode(const ASTNode *node);
 
-    // Prepare code generation: allocate or free
-    void allocateGlobalMemory(const std::vector<std::string> &variables);
+    /// Emit code for setting up the spill slot base
+    static void setupSpillSlotBase();
 
-    void freeGlobalMemory();
-
-    void printRegisterMaps();
-
-    asmjit::x86::Xmm getRegister(const std::string &tmpName, Expression *expr);
-
-    void addCompactRegisterComments();
-
-    void addRegisterComments();
-
-    asmjit::x86::Xmm reloadSpilledVariable(const std::string &varName);
-
-
-    void spillVariable(const std::string &var, asmjit::x86::Xmm reg);
-
-    asmjit::x86::Xmm reloadRegister(const std::string &var, size_t spillOffset);
-
-    void clearMappings(const std::string &var, asmjit::x86::Xmm reg);
-
-    void emitRegisterSave();
-
-    void emitRegisterRestore();
-
-    void emitSpillAndReloadForArguments(const std::vector<Expression *> &args);
-
-    bool isVariableSpilled(const std::string &varName);
-
-    asmjit::x86::Xmm findRegisterForVariable(const std::string &varName);
-
-    asmjit::x86::Xmm findOrAllocateTempRegister(const std::string &tmpName, Expression *expr,
-                                                const std::string &varName);
-
-    void copyVariableToTempRegister(const std::string &varName, const std::string &tmpName, asmjit::x86::Xmm varReg,
-                                    asmjit::x86::Xmm tmpReg);
-
-    asmjit::x86::Xmm emitChildExpression(Expression *childExpr);
-
-    void emitBinaryOperation(const std::string &op, const asmjit::x86::Xmm &exprReg, const asmjit::x86::Xmm &lhsReg,
-                             const asmjit::x86::Xmm &rhsReg, Expression *lhsExpr, Expression *rhsExpr);
-
-    void decrementUsage(const std::string &var);
-
-    void emitExponentiation(asmjit::x86::Xmm exprReg, asmjit::x86::Xmm lhsReg, asmjit::x86::Xmm rhsReg);
-
-    void logJitOperation(const std::string &message);
-
-    void decrementUsageByRegister(asmjit::x86::Xmm reg);
-
-    asmjit::x86::Xmm resolveTempRegister(const std::string &tmpName);
-
-    // Main entry: build native code from AST
-    void generate(const LetStatement &root);
+    /// Emit the prologue for Let expression evaluation
+    static void emitFunctionPrologue();
 
 private:
-    // XMM register usage
-    std::unordered_map<std::string, asmjit::x86::Xmm> registerMap; // map "varName" -> Xmm
-    std::unordered_map<uint32_t, std::string> reverseRegisterMap; // optional: Xmm.id() -> name
-    // int xmmIndex;
-    std::unordered_map<Expression *, std::string> tempNameMap;
-    size_t spillOffsetCounter = 0; // next free offset in spill memory
-    std::unordered_map<std::string, size_t> spillSlots; // var -> spill offset
-    // For memory-based variable storage (if needed)
-    uint8_t *globalMemory;
-    size_t gTempCounter = 0;
-    const u_int32_t spill_reserve = 16 * 16;
-    // size_t memorySize = size_t(GLOBAL_MEMORY_SIZE);
-    std::unordered_map<std::string, size_t> varOffsets;
-    std::unordered_map<std::string, size_t> usageTracker;
-    std::unordered_map<std::string, asmjit::x86::Xmm> literalCache;
-    std::set<std::string> inProgressExpressions;
+    // Private constructor
+    LetCodeGenerator();
 
-    struct TempRegInfo {
-        asmjit::x86::Xmm reg; // The assigned register
-        std::string spillSlot; // Spill location (if spilled)
-        bool isSpilled = false; // Whether it's currently spilled
-    };
+    // Generate Let statement code
+    void generateLetStatement(const LetStatement *letStmt);
 
-    std::map<std::string, TempRegInfo> tempRegisters; // Tracks _tmpN lifecycle
+    // Generate WHERE clause code
+    void generateWhereClause(const WhereClause *wc);
 
+    // Generate expression code
+    void generateExpression(Expression *expr);
+    void generateLiteralExpr(const Expression *expr);
+    void generateVariableExpr(const Expression *expr);
 
-    // Utility: allocate an XMM register for a given name
-    asmjit::x86::Xmm allocateRegister(const std::string &var);
+    void commentOnExpression(const Expression *expr);
 
-    asmjit::x86::Xmm findFreeRegister();
+    void generateFunctionExpr(const Expression *expr);
+    void generateBinaryOpExpr(Expression *expr);
+    void generateUnaryOpExpr(const Expression *expr);
 
-    bool isConstantValue(const std::string &varName) const;
+    void emitBinaryOperation(const std::string &op,
+                             const asmjit::x86::Xmm &exprReg,
+                             const asmjit::x86::Xmm &lhsReg,
+                             const asmjit::x86::Xmm &rhsReg,
+                             [[maybe_unused]] Expression *lhsExpr,
+                             [[maybe_unused]] Expression *rhsExpr);
 
-    asmjit::x86::Xmm spillRegister(const std::string &var);
+    void callMathFunction(const std::string &funcName, const asmjit::x86::Xmm &arg1Reg,
+                          const asmjit::x86::Xmm &arg2Reg = asmjit::x86::Xmm());
 
-    // If we need to free registers
-    void freeRegister(const std::string &varOrLiteral);
+    void emitExponentiation(asmjit::x86::Xmm exprReg,
+                            asmjit::x86::Xmm lhsReg,
+                            asmjit::x86::Xmm rhsReg);
 
-    // Preallocate registers for all relevant variables/expressions
-    void preallocateRegisters(const LetStatement &root);
-
-    // Recursively collect variables from an expression
-    void collectVariablesFromExpression(Expression *expr);
-
-    // Emit top-level code for an expression node
-    void emitExpression(Expression *expr);
+    void emitLoadDoubleLiteral(const std::string &literalString, asmjit::x86::Xmm destReg);
 
     bool isConstantExpression(Expression *expr);
 
-    // Emit code for a WHERE clause
-    void emitWhereClause(WhereClause *whereClause);
 
-    // A small helper to ensure each expression node gets a unique name
-    std::string getUniqueTempName(Expression *expr);
+    void printRegisterUsage() const;
 
-    void saveCallerSavedRegisters();
+    static void preserveAndCallFunction(void *func);
 
-    void restoreCallerSavedRegisters();
+    std::string expressionToString(const Expression *expr);
 
-    void callMathFunction(const std::string &funcName, const asmjit::x86::Xmm &arg1Reg,
-                          const asmjit::x86::Xmm &arg2Reg);
+    std::string getUniqueTempName(const Expression *expr);
 
-    // For referencing or storing literal data
-    void emitLoadDoubleLiteral(const std::string &literalString, asmjit::x86::Xmm destReg);
+    std::string expressionToText(const Expression *expr);
 
-    void incrementUsage(const std::string &var);
+    /// Stores variables generated in Let expressions
+    std::unordered_map<std::string, std::string> variables;
+    std::map<std::string, double> globalVariables;
+    std::unordered_map<const Expression*, std::string> expressionNameMap;
+    /// Register tracker reference
+    RegisterTracker &tracker = RegisterTracker::instance();
 };
 
-#endif // LET_CODE_GENERATOR_H
+#endif // LETCODEGENERATOR_H

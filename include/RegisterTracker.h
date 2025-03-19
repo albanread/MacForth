@@ -14,6 +14,7 @@
 #include <cstddef>   // For std::byte
 #include <thread>    // For thread-local variables
 #include "CodeGenerator.h"
+#include <cpuid.h>
 
 // Thread-local spill slot memory
 static thread_local std::vector<std::byte> gSpillSlotMemory;
@@ -34,15 +35,18 @@ public:
     friend class Singleton<RegisterTracker>; // Allow `Singleton` to access the constructor
 
 public:
-    static constexpr int NUM_XMM_REGS = 16; // xmm0 - xmm15
     static constexpr int NUM_GP_CACHE_REGS = 4; // R12, R13, R14, R15
     static constexpr int GLOBAL_MEMORY_OFFSET = 0x100; // Base offset for spills
 
     RegisterTracker()
         : spillOffset(0) {
-        for (int i = 0; i < NUM_XMM_REGS; ++i) {
+        if (isAVX512Supported()) {
+            xmm_count = 32;
+        }
+        for (int i = 0; i < xmm_count; ++i) {
             freeXmmRegisters.push_back(i);
         }
+
         freeGpCache = {
             {"r12", CACHE_REG_R12},
             {"r13", CACHE_REG_R13},
@@ -63,6 +67,7 @@ public:
         freeGpCache.clear();
         constantValues.clear();
         cacheToGP = false;
+        spillOffset = spillOffset + 48*16;
 
         ensureThreadLocalSpillMemory(MAX_SPILL_SLOTS);
         // Reinitialize spill offset
@@ -71,7 +76,7 @@ public:
         base_slots = getThreadLocalSpillMemory();
 
         // Populate free XMM registers
-        for (int i = 0; i < NUM_XMM_REGS; ++i) {
+        for (int i = 0; i < xmm_count; ++i) {
             freeXmmRegisters.push_back(i);
         }
 
@@ -84,6 +89,19 @@ public:
         };
 
         debugMessage("RegisterTracker initialized successfully.");
+    }
+
+
+    static bool isAVX512Supported() {
+        unsigned int eax, ebx, ecx, edx;
+        // Call CPUID with EAX = 7 and ECX = 0 to check extended features
+        if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+            // AVX512F (bit 16 of EBX) indicates support for AVX-512
+            if (ebx & (1 << 16)) {
+                return true;
+            }
+        }
+        return false;
     }
 
 
@@ -134,9 +152,6 @@ public:
     }
 
     asmjit::x86::Xmm createXmmFromVarName(const std::string &varName) {
-
-
-
         auto it = registerMap.find(varName);
         if (it == registerMap.end()) {
             std::cerr << ("Variable not found in registerMap: " + varName);
@@ -159,7 +174,6 @@ public:
 
 
     asmjit::x86::Xmm allocateRegister(const std::string &varName) {
-
         // Check if the variable already has a register allocated
 
         auto it = registerMap.find(varName);
@@ -167,6 +181,12 @@ public:
             registerAccessCounter[varName]++; // Update LRU metric
             debugMessage("Reusing register " + xmmRegToStr(it->second) + " for " + varName);
             return createXmmFromId(it->second);
+        }
+
+        // reload from spill registers if spilled
+        if (spillSlots.find(varName) != spillSlots.end()) {
+            debugMessage("RELOADING :" + varName);
+            return reloadFromSpill(varName);
         }
 
         // Allocate from free registers
@@ -212,46 +232,108 @@ public:
         }
     }
 
+    void reloadRegisters() {
 
-    // save for C call
-    void spillRegisters() {
-        asmjit::x86::Assembler *assembler;
-        initialize_assembler(assembler);
-
-        // Define the registers to check for spilling (xmm3 to xmm7)
-        std::vector<int> registersToSpill = {3, 4, 5, 6, 7};
-
-        for (int regId: registersToSpill) {
-            // Check if the register is currently allocated
+        for (int regId = 0; regId <= xmm_count; ++regId) {
+            // Check if there's a variable name associated with the current register
             auto it = std::find_if(registerMap.begin(), registerMap.end(),
                                    [regId](const auto &pair) {
                                        return pair.second == regId;
                                    });
 
             if (it != registerMap.end()) {
-                // This register is in use, spill it to memory
-                const std::string &varName = it->first; // Get the variable name using this register
-
-                // Check if already spilled
-                if (spillSlots.find(varName) == spillSlots.end()) {
-                    debugMessage("Spilling register xmm" + std::to_string(regId) + " for variable: " + varName);
-
-                    // Assign a memory offset for spilling
-                    spillSlots[varName] = spillOffset;
-
-                    // Generate assembly code to spill the register
-                    //assembler->mov(asmjit::x86::rax, spillOffset); // Load spill offset into rax
-                    assembler->movsd(asmjit::x86::ptr(asmjit::x86::rdi, spillOffset), createXmmFromId(regId));
-                    spillOffset += SPILL_ALIGNMENT; // Move to the next aligned memory slot
+                // Get the variable name associated with this register
+                const std::string &varName = it->first;
+                if (varName.empty()) {
+                } else {
+                    int offset =  regId*16;
+                    // Call the provided spillRegister function with the variable name
+                    debugMessage(
+                        "Post-Call: load xmm" + std::to_string(regId) + " for: " + varName);
+                    forceLoadRegister(varName, offset);
                 }
             }
         }
     }
 
 
+    void spillRegisters() {
+        // Iterate through the range of registers (xmm2 to xmm_count)
+
+        for (int regId = 0; regId <= xmm_count; ++regId) {
+            // Check if there's a variable name associated with the current register
+            auto it = std::find_if(registerMap.begin(), registerMap.end(),
+                                   [regId](const auto &pair) {
+                                       return pair.second == regId;
+                                   });
+
+            if (it != registerMap.end()) {
+                // Get the variable name associated with this register
+                const std::string &varName = it->first;
+                if (varName.empty()) {
+                } else {
+                    int offset = regId*16;
+                    // Call the provided spillRegister function with the variable name
+                    debugMessage(
+                        "Pre-Call: spill xmm" + std::to_string(regId) + " for: " + varName);
+                    forceSpillRegister(varName, offset);
+                }
+            }
+        }
+    }
+
+    std::string getRegisterName(const std::string &varName) {
+        // Check if the variable exists in the registerMap
+        auto it = registerMap.find(varName);
+        if (it != registerMap.end()) {
+            // Convert the register ID to a human-readable register name
+            int regId = it->second;
+            return "xmm" + std::to_string(regId);
+        }
+
+        // Variable is not assigned to a register
+        return "";
+    }
+
+
+    int getRegisterIdfromName(const std::string &varName) {
+        // Check if the variable exists in the registerMap
+        auto it = registerMap.find(varName);
+        if (it != registerMap.end()) {
+            // Return the register ID
+            return it->second;
+        }
+        return -1;
+    }
+
+    void forceSpillRegister(const std::string &varName, uint64_t offset) {
+        if (varName.empty()) return;
+        asmjit::x86::Assembler *assembler;
+        initialize_assembler(assembler);
+        auto id = getRegisterIdfromName(varName);
+        if (id == -1) {
+            return;
+        }
+        assembler->movsd(asmjit::x86::ptr(asmjit::x86::rdi, offset), createXmmFromId(id));
+        debugMessage("Spill: " + varName + " in: " + xmmRegToStr(id) + " to: " +
+                     std::to_string(offset));
+    }
+
+    void forceLoadRegister(const std::string &varName, uint64_t offset) {
+        if (varName.empty()) return;
+        asmjit::x86::Assembler *assembler;
+        initialize_assembler(assembler);
+        auto id = getRegisterIdfromName(varName);
+        if (id == -1) {
+            return;
+        }
+        assembler->movsd(createXmmFromId(id), asmjit::x86::ptr(asmjit::x86::rdi, offset));
+        debugMessage("Reloaded " + varName + " from memory into " + xmmRegToStr(id));
+    }
+
+
     /** Spills a register into memory (constants are only spilled once) */
     asmjit::x86::Xmm spillRegister(const std::string &varName) {
-
         asmjit::x86::Assembler *assembler;
         initialize_assembler(assembler);
 
@@ -265,8 +347,8 @@ public:
         const Xmm spilledRegLU = registerMap[spilledVar];
 
 
-        int minUsage = INT_MAX;  // Start with a high value
-        for (const auto &entry : registerAccessCounter) {
+        int minUsage = INT_MAX; // Start with a high value
+        for (const auto &entry: registerAccessCounter) {
             if (registerMap.find(entry.first) != registerMap.end() && entry.second < minUsage) {
                 minUsage = entry.second;
                 spilledVar = entry.first;
@@ -343,12 +425,18 @@ public:
             SignalHandler::instance().raise(25);
         }
 
-        asmjit::x86::Xmm reg = allocateRegister(varName);
-        //assembler->mov(asmjit::x86::rax, spillSlots[varName]);
-        assembler->movsd(reg, asmjit::x86::ptr(asmjit::x86::rdi, spillSlots[varName]));
-        spillSlots.erase(varName);
+        auto regId = freeXmmRegisters.back(); // Get the last free register
+        freeXmmRegisters.pop_back(); // Remove it from the free list
+        auto reg = createXmmFromId(regId);
 
+        // Allocate the new register
+        registerMap[varName] = regId; // Map variable to the register
+        registerUsage.push_front(varName); // Track usage for spilling
+        debugMessage("Allocated register " + xmmRegToStr(regId) + " for " + varName);
+        registerAccessCounter[varName] = 1; // new LRU metric
+        assembler->movsd(reg, asmjit::x86::ptr(asmjit::x86::rdi, spillSlots[varName]));
         debugMessage("Reloaded " + varName + " from memory into " + xmmRegToStr(reg));
+
         return reg;
     }
 
@@ -384,6 +472,10 @@ public:
         constantValues.insert(varName);
     }
 
+    bool isConstant(const std::string &varName) {
+        return (constantValues.find(varName) != constantValues.end());
+    }
+
     [[nodiscard]] bool wasGpCacheUsed() const {
         return gpCacheUsed;
     }
@@ -417,12 +509,14 @@ public:
         return "xmm" + std::to_string(r);
     }
 
-private:
+private
+:
     bool gpCacheUsed = false;
     bool cacheToGP = false;
     bool LRU = false;
     std::unordered_map<std::string, int> registerMap;
     std::unordered_map<std::string, int> spillSlots;
+
     std::list<std::string> registerUsage;
     std::vector<int> freeXmmRegisters;
     std::set<int> reservedXmmRegisters; // Reserved XMM register IDs
@@ -431,6 +525,7 @@ private:
     std::unordered_map<std::string, int> freeGpCache;
     std::unordered_set<std::string> constantValues;
     std::unordered_map<std::string, int> registerAccessCounter; // LRU metric
+    int xmm_count = 16;
 
     // New map to track variables cached in GP registers
     std::unordered_map<std::string, int> gpCacheMap;
@@ -448,8 +543,11 @@ private:
 
     /** Centralized debug message handler */
     static void debugMessage(const std::string &msg) {
-        if (false) {
-            std::cerr << "[DEBUG] " << msg << std::endl;
+        if (debug) {
+            asmjit::x86::Assembler *assembler;
+            initialize_assembler(assembler);
+            std::string debug = "; [DEBUG] " + msg;
+            assembler->comment(debug.c_str());
         }
     }
 

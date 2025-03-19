@@ -12,13 +12,43 @@ inline bool GPCACHE = false;
 inline bool TrackLRU = true;
 
 
+
+inline void display_settings() {
+    std::cout << "Current Settings:" << std::endl;
+    std::cout << "Stack prompt: " << (print_stack ? "ON" : "OFF") << std::endl;
+    std::cout << "Optimizer: " << (optimizer ? "ON" : "OFF") << std::endl;
+    std::cout << "JIT logging: " << (jitLogging ? "ON" : "OFF") << std::endl;
+    std::cout << "Debug mode: " << (debug ? "ON" : "OFF") << std::endl;
+    std::cout << "GPCACHE: " << (GPCACHE ? "ON" : "OFF") << std::endl;
+    std::cout << "Track LRU: " << (TrackLRU ? "ON" : "OFF") << std::endl;
+}
+
+inline void display_set_help() {
+std::cout << "Usage: SET <feature> <state>" << std::endl;
+    std::cout << "Available features:" << std::endl;
+    std::cout << "  STACKPROMPT ON/OFF" << std::endl;
+    std::cout << "  DEBUG ON/OFF" << std::endl;
+    std::cout << "  GPCACHE ON/OFF" << std::endl;
+    std::cout << "  LOGGING ON/OFF" << std::endl;
+    std::cout << "  OPTIMIZE ON/OFF" << std::endl;
+    std::cout << "  TRACKLRU ON/OFF" << std::endl;
+    std::cout << std::endl;
+    display_settings();
+}
+
+
+
 // SET THING ON,OFF
 inline void runImmediateSET(std::deque<ForthToken> &tokens) {
     // we arrived here from TOKEN SET
 
     const ForthToken second = tokens.front();
     tokens.erase(tokens.begin()); // Remove the processed token
-    if (tokens.empty()) return; // Exit early if no tokens to process
+    if (tokens.empty()) {
+        display_set_help();
+        return; // Exit early if no tokens to process
+    }
+
     auto feature = second.value;
 
     const ForthToken third = tokens.front();

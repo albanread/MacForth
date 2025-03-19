@@ -119,11 +119,11 @@ public:
 
     void listAllocations() const {
         if (allocations.empty()) {
-            std::cout << "WordHeap: No allocations available." << std::endl;
+            std::cout << "WordHeap: No allotments have been allocated." << std::endl;
             return;
         }
 
-        std::cout << "WordHeap: Current memory allocations:" << std::endl;
+        std::cout << "WordHeap: Current allot allocations:" << std::endl;
 
         for (const auto &[wordId, allocation]: allocations) {
             // Display metadata for the allocation

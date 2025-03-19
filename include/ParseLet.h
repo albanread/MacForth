@@ -32,10 +32,34 @@ struct Expression : public ASTNode {
     std::vector<std::unique_ptr<Expression> > children;
     bool processed = false;
     bool isConstant = false;
+    bool isEvaluated = false;
+    double evaluatedValue = 0;
+
 
     Expression(ExprType t, const std::string &val)
         : type(t), value(val) {
+
     }
+
+    [[nodiscard]] bool hasPrecomputedValue() const {
+        return isEvaluated;
+    }
+
+    double getPrecomputedValue() const {
+        if (!hasPrecomputedValue()) {
+            std::cerr << "no precomputed value" << std::endl;
+            SignalHandler::instance().raise(24); // Syntax error
+            return 0;
+        }
+        return evaluatedValue;
+    }
+
+    void setPrecomputedValue(double val) {
+        evaluatedValue = val;
+        isConstant = true;
+        isEvaluated = true;
+    }
+
 };
 
 // WHERE clause (var = expr)

@@ -1949,7 +1949,16 @@ void runImmediateALLOT_TO(std::deque<ForthToken> &tokens) {
     first_word->AllotData(capacity);
 }
 
-
+// show help displays all the show commands
+void display_show_help() {
+    std::cout << "usage show <topic>" << std::endl;
+    std::cout << "available topics" << std::endl;
+    std::cout << " words" << std::endl;
+    std::cout << " chain" << std::endl;
+    std::cout << " allot" << std::endl;
+    std::cout << " strings" << std::endl;
+    std::cout << " words_detailed" << std::endl;
+}
 
 // SHOW THING
 void runImmediateSHOW(std::deque<ForthToken> &tokens) {
@@ -1962,6 +1971,7 @@ void runImmediateSHOW(std::deque<ForthToken> &tokens) {
     auto thing = first.value;
 
     if (thing.empty()) {
+        display_show_help();
         return;
     }
     if (thing == "ALLOT") {

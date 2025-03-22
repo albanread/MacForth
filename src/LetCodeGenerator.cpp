@@ -251,11 +251,162 @@ void LetCodeGenerator::generateFunctionExpr(const Expression *expr) {
         argNameToReg.emplace_back(argName, argReg);
     }
 
+    // we implement some simple functions to avoid function calls.
     // square root
     if (funcName == "sqrt") {
         assembler->sqrtsd(asmjit::x86::xmm0, argNameToReg[0].second);
 
-    } else if (funcName == "hypot") {
+
+    } else if (funcName == "remainder") {
+        assembler->comment("; Compute floating-point remainder");
+
+        // Allocate registers for the dividend, divisor, and intermediate results
+        auto dividendReg = tracker.allocateRegister("_dividend"); // Store dividend
+        auto divisorReg = tracker.allocateRegister("_divisor"); // Store divisor
+        auto quotientReg = tracker.allocateRegister("_quotient"); // Store a/b (quotient)
+        auto tempReg = tracker.allocateRegister("_temp"); // Temporary register
+
+        // Move the arguments to the allocated registers
+        assembler->movapd(dividendReg, argNameToReg[0].second); // Move `a` (dividend)
+        assembler->movapd(divisorReg, argNameToReg[1].second); // Move `b` (divisor)
+
+        // Perform a / b
+        assembler->comment("; Compute a / b");
+        assembler->movapd(quotientReg, dividendReg); // Copy dividend to quotientReg
+        assembler->divsd(quotientReg, divisorReg); // quotientReg = a / b
+
+        // Round the quotient to the nearest integer
+        assembler->comment("; Round quotient to the nearest integer");
+        assembler->roundsd(quotientReg, quotientReg, 0); // `kRoundNearest` = 0b00
+
+        // Multiply rounded quotient by the divisor (b * round(a / b))
+        assembler->comment("; Compute round(a / b) * b");
+        assembler->movapd(tempReg, divisorReg); // Copy divisor to tempReg
+        assembler->mulsd(tempReg, quotientReg); // tempReg = round(a / b) * b
+
+        // Subtract the result from the dividend to compute the remainder
+        assembler->comment("; Compute a - (round(a / b) * b)");
+        assembler->movapd(quotientReg, dividendReg); // Copy dividend to quotientReg
+        assembler->subsd(quotientReg, tempReg); // quotientReg = dividend - tempReg
+
+        // Move the result into xmm0
+        assembler->movaps(asmjit::x86::xmm0, quotientReg); // Store the result in xmm0
+
+        // Free the allocated registers
+        tracker.freeRegister("_dividend");
+        tracker.freeRegister("_divisor");
+        tracker.freeRegister("_quotient");
+        tracker.freeRegister("_temp");
+
+    } else if (funcName == "fmod") {
+
+        assembler->comment("; Compute floating-point modulo (fmod)");
+
+        // Allocate registers for the dividend, divisor, and intermediate results
+        auto dividendReg = tracker.allocateRegister("_dividend"); // Store dividend
+        auto divisorReg = tracker.allocateRegister("_divisor"); // Store divisor
+        auto quotientReg = tracker.allocateRegister("_quotient"); // Store a/b (quotient)
+        auto tempReg = tracker.allocateRegister("_temp"); // Temporary register
+
+        // Move the arguments to the allocated registers
+        assembler->movapd(dividendReg, argNameToReg[0].second); // Move `a` (dividend)
+        assembler->movapd(divisorReg, argNameToReg[1].second); // Move `b` (divisor)
+
+        // Perform a / b
+        assembler->comment("; Compute a / b");
+        assembler->movapd(quotientReg, dividendReg); // Copy dividend to quotientReg
+        assembler->divsd(quotientReg, divisorReg); // quotientReg = a / b
+
+        // Truncate the quotient to an integer
+        assembler->comment("; Truncate quotient toward zero");
+        assembler->roundsd(quotientReg, quotientReg, 3);
+
+        // Multiply truncated quotient by the divisor (b * trunc(a / b))
+        assembler->comment("; Compute trunc(a / b) * b");
+        assembler->movapd(tempReg, divisorReg); // Copy divisor to tempReg
+        assembler->mulsd(tempReg, quotientReg); // tempReg = trunc(a / b) * b
+
+        // Subtract the result from the dividend to compute the remainder
+        assembler->comment("; Compute a - (trunc(a / b) * b)");
+        assembler->movapd(quotientReg, dividendReg); // Copy dividend to quotientReg
+        assembler->subsd(quotientReg, tempReg); // quotientReg = dividend - tempReg
+
+        // Move the result to xmm0
+        assembler->movaps(asmjit::x86::xmm0, quotientReg); // Store the result in xmm0
+
+        // Free the allocated registers
+        tracker.freeRegister("_dividend");
+        tracker.freeRegister("_divisor");
+        tracker.freeRegister("_quotient");
+        tracker.freeRegister("_temp");
+
+    } else if
+    (funcName
+     ==
+     "fmax"
+    ) {
+        assembler->comment("; Compute maximum value (fmax)");
+
+        // Allocate registers for the two arguments (x and y) and the result
+        auto resultReg = tracker.allocateRegister("_result");
+
+        assembler->comment("; Compute fmax using maxsd instruction");
+        assembler->movapd(resultReg, argNameToReg[0].second); // Move arg1 into resultReg
+        assembler->maxsd(resultReg, argNameToReg[1].second); // resultReg = max(arg1, arg2)
+
+        assembler->comment("; Store result in xmm0");
+        assembler->movaps(asmjit::x86::xmm0, resultReg); // Store result in xmm0 for usage in further computations
+
+        // Free allocated registers
+        tracker.freeRegister("_result");
+    } else if
+    (funcName
+     ==
+     "fmin"
+    ) {
+        assembler->comment("; Compute minimum value (fmin)");
+
+        // Allocate registers for the two arguments (x and y) and the result
+        auto resultReg = tracker.allocateRegister("_result");
+
+        assembler->comment("; Compute fmin using mins instruction");
+        assembler->movapd(resultReg, argNameToReg[0].second); // Move arg1 into resultReg
+        assembler->minsd(resultReg, argNameToReg[1].second); // resultReg = min(arg1, arg2)
+
+        assembler->comment("; Store result in xmm0");
+        assembler->movaps(asmjit::x86::xmm0, resultReg); // Store result in xmm0 for future use
+
+        // Free allocated registers
+        tracker.freeRegister("_result");
+    } else if
+    (funcName
+     ==
+     "fabs"
+    ) {
+        assembler->comment("; Absolute value (fabs)");
+        auto resultReg = tracker.allocateRegister("_result");
+        auto maskReg = tracker.allocateRegister("_mask");
+
+        assembler->comment("; Load mask for fabs (0x7FFFFFFFFFFFFFFF)");
+        asmjit::x86::Gp transfer = asmjit::x86::rax; // Temporary general-purpose register
+        assembler->mov(transfer, asmjit::Imm(0x7FFFFFFFFFFFFFFF));
+        assembler->movq(maskReg, transfer);
+
+        assembler->comment("; Apply fabs using bitmask");
+        assembler->movapd(resultReg, argNameToReg[0].second);
+        assembler->andpd(resultReg, maskReg); // Clear the sign bit to compute fabs
+
+        assembler->comment("; Store result in xmm0");
+        assembler->movaps(asmjit::x86::xmm0, resultReg);
+
+        tracker.freeRegister("_input");
+        tracker.freeRegister("_result");
+        tracker.freeRegister("_mask");
+    } else if
+    (funcName
+     ==
+     "hypot"
+    ) {
         assembler->comment("; Hypotenuse");
         asmjit::Label hypot_done = assembler->newLabel();
         auto xReg = tracker.allocateRegister("_x");
@@ -278,9 +429,9 @@ void LetCodeGenerator::generateFunctionExpr(const Expression *expr) {
 
         // Ensure x >= y (swap if necessary)
         assembler->comment("; Ensure x >= y");
-        assembler->movapd(tempReg, xReg);   // temp = x
-        assembler->maxsd(xReg, yReg);       // x = max(x, y)
-        assembler->minsd(yReg, tempReg);    // y = min(temp, y)
+        assembler->movapd(tempReg, xReg); // temp = x
+        assembler->maxsd(xReg, yReg); // x = max(x, y)
+        assembler->minsd(yReg, tempReg); // y = min(temp, y)
 
 
         // Check if y == 0, return x
@@ -318,13 +469,26 @@ void LetCodeGenerator::generateFunctionExpr(const Expression *expr) {
         tracker.freeRegister("_one");
         tracker.freeRegister("_mask");
         // Free the registers for the argument names.
-
     } else
 
     // Check argument count and call the appropriate math function
-        if (argNameToReg.size() == 1) {
+        if
+        (argNameToReg
+         .
+         size()
+
+         ==
+         1
+        ) {
             callMathFunction(funcName, argNameToReg[0].second, asmjit::x86::Xmm()); // Single argument
-        } else if (argNameToReg.size() == 2) {
+        } else if
+        (argNameToReg
+         .
+         size()
+
+         ==
+         2
+        ) {
             callMathFunction(funcName, argNameToReg[0].second, argNameToReg[1].second); // Two arguments
         } else {
             if (debug)
@@ -335,11 +499,22 @@ void LetCodeGenerator::generateFunctionExpr(const Expression *expr) {
     auto name = getUniqueTempName(expr);
     asmjit::x86::Xmm exprReg = RegisterTracker::instance().allocateRegister(name);
     // capture the result from the function
-    if (exprReg.id() != 0) {
+    if
+    (exprReg
+     .
+     id()
+
+     !=
+     0
+    ) {
         assembler->movaps(exprReg, asmjit::x86::xmm0); // Capture
     }
     // Frees the registers for the argument names.
-    for (const auto &pair: argNameToReg) {
+    for
+    (
+
+        const auto &pair: argNameToReg
+    ) {
         RegisterTracker::instance().freeRegister(pair.first); // Free register by its variable name
     }
 }

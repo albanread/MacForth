@@ -36,11 +36,12 @@ void display_stack_status() {
     std::cout << std::endl;
 }
 
-bool containsColonSpace(const std::string& input) {
+bool containsColonSpace(const std::string &input) {
     // Check if ": " is found in the string
     return input.find(": ") != std::string::npos;
 }
-bool containsSemiColon(const std::string& input) {
+
+bool containsSemiColon(const std::string &input) {
     // Check if " ;" is found in the string
     return input.find(';') != std::string::npos;
 }
@@ -72,8 +73,8 @@ void to_uppercase(std::string &str) {
         }
     }
 }
-inline void interactive_terminal()
-{
+
+inline void interactive_terminal() {
     std::string input;
     std::string accumulated_input;
     bool compiling = false;
@@ -84,29 +85,25 @@ inline void interactive_terminal()
     LineReader::initialize();
 
     // The infinite terminal loop
-    while (true)
-    {
+    while (true) {
         std::cout << (compiling ? "] " : "> ") << std::flush;
 
         input = LineReader::readLine();
 
         // Exit condition
-        if (input == "BYE" || input == "bye")
-        {
+        if (input == "BYE" || input == "bye") {
             LineReader::finalize();
             exit(0);
         }
 
         // Discard comments (strip everything after `\`)
         size_t comment_pos = input.find("\\");
-        if (comment_pos != std::string::npos)
-        {
+        if (comment_pos != std::string::npos) {
             input = input.substr(0, comment_pos); // Keep everything before the `\`
         }
 
         // Ignore empty input after stripping comments
-        if (input.empty())
-        {
+        if (input.empty()) {
             continue;
         }
 
@@ -115,9 +112,7 @@ inline void interactive_terminal()
         if (containsSemiColon(input)) compiling = false;
 
         accumulated_input += " " + input; // Accumulate input lines
-        if (!compiling)
-        {
-
+        if (!compiling) {
             to_uppercase(accumulated_input);
             Interpreter::instance().execute(accumulated_input);
             accumulated_input.clear();
@@ -130,6 +125,7 @@ inline void interactive_terminal()
 // The Quit function with setjmp for recovery
 void Quit() {
     SignalHandler::instance().register_signal_handlers();
+
 
     // Main program loop
     while (true) {

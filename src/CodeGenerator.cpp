@@ -16,6 +16,7 @@
 #include "Settings.h"
 // MacOS timing functions.
 #include <mach/mach_time.h>
+#include "Interpreter.h"
 
 void *code_generator_heap_start = nullptr;
 
@@ -250,6 +251,46 @@ void code_generator_initialize() {
     code_generator_add_control_flow_words();
     code_generator_add_vocab_words();
     code_generator_add_float_words();
+
+    // compiler has started lets compile some core words.
+
+    Interpreter::instance().execute(
+        R"(
+            : U.
+              0x2020202020202020 PAD !
+              PAD >R
+              R> 1 + >R
+              BEGIN
+                DUP BASE @ MOD
+                DIGIT
+                R@ C!
+                R> 1 + >R
+                BASE @ /
+                DUP 0 =
+              UNTIL
+              DROP
+              R>
+              BEGIN
+                1 -
+                DUP C@ EMIT
+                DUP PAD >
+              WHILE
+              REPEAT
+              C@ EMIT
+                ;
+    )");
+
+    Interpreter::instance().execute(
+        R"( : . .- U. ; )");
+
+    Interpreter::instance().execute(
+     R"( : DECIMAL 10 BASE ! ;)");
+
+    Interpreter::instance().execute(
+    R"( : HEX 16 BASE ! ;)");
+
+    Interpreter::instance().execute(
+    R"( CLS ." MacForth" CR )");
 
     std::cout << "FORTH dictionary created." << std::endl;
 }
@@ -486,6 +527,35 @@ void code_generator_align(asmjit::x86::Assembler *assembler) {
 }
 
 
+// primitive i/o
+
+void spit_str(const char *str) {
+    std::cout << str << std::flush;
+}
+
+
+// static void spit_number(const int64_t n) {
+//     std::cout << std::dec << n << ' ';
+// }
+
+// static void spit_number_f(double f) {
+//     std::cout << f << ' ';
+// }
+
+
+static void spit_char(const char c) {
+    putchar(c);
+}
+
+static void spit_end_line() {
+    putchar('\n');
+}
+
+static void spit_cls() {
+    std::cout << "\033c";
+}
+
+
 // call at function start
 void code_generator_startFunction(const std::string &name) {
     JitContext::instance().initialize();
@@ -584,6 +654,8 @@ void compile_call_C_char(void (*func)(char *)) {
     assembler->call(func);
     assembler->pop(asmjit::x86::rdi);
 }
+
+
 
 
 // Stack words
@@ -1387,12 +1459,29 @@ static void compile_DIV() {
     assembler->mov(asmjit::x86::r13, asmjit::x86::rax);
 }
 
+static void compile_UDIV() {
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler); // Initialize the assembler context
+    assembler->comment("; -- UDIV (unsigned division)");
+
+    assembler->mov(asmjit::x86::rax, asmjit::x86::r12); // Move TOS-1 (R12) into RAX
+    assembler->xor_(asmjit::x86::rdx, asmjit::x86::rdx); // Clear RDX (high part of dividend) for unsigned division
+    assembler->div(asmjit::x86::r13); // Perform unsigned division RDX:RAX / TOS (R13)
+    compile_DROP(); // Drop TOS-1
+    assembler->mov(asmjit::x86::r13, asmjit::x86::rax); // Move quotient (RAX) into TOS (R13)
+}
+
+
+
+
 static void compile_MOD() {
+
     asmjit::x86::Assembler *assembler = &JitContext::instance().getAssembler();
     if (!assembler) {
         SignalHandler::instance().raise(10);
         return;
     }
+
     assembler->comment("; -- MOD");
     assembler->mov(asmjit::x86::rax, asmjit::x86::r12); // Move TOS-1 (R12) into RAX
     assembler->cqo(); // Sign-extend RAX into RDX:RAX
@@ -1401,6 +1490,29 @@ static void compile_MOD() {
     assembler->mov(asmjit::x86::r13, asmjit::x86::rdx); // Move remainder (RDX) into TOS (R13)
 
 }
+
+static void compile_UMOD() {
+
+    // Get the assembler instance for JIT
+    asmjit::x86::Assembler *assembler = &JitContext::instance().getAssembler();
+    if (!assembler) {
+        SignalHandler::instance().raise(10); // Raise signal on error
+        return;
+    }
+
+    // Generate the assembly instructions for UMOD
+    assembler->comment("; -- UMOD (unsigned remainder)");
+    assembler->mov(asmjit::x86::rax, asmjit::x86::r12); // Move TOS-1 (R12) into RAX
+    assembler->xor_(asmjit::x86::rdx, asmjit::x86::rdx); // Clear RDX (high part of dividend) for unsigned division
+    assembler->div(asmjit::x86::r13); // Perform unsigned division RDX:RAX / TOS (R13)
+    compile_DROP(); // Drop TOS-1
+    assembler->mov(asmjit::x86::r13, asmjit::x86::rdx); // Move remainder (RDX) into TOS (R13)
+}
+
+
+
+
+
 
 static void compile_AND() {
     asmjit::x86::Assembler *assembler;
@@ -1441,6 +1553,22 @@ static void compile_XOR() {
     assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15)); // Pull the new TOS-1 from memory
 }
 
+static void compile_ABS() {
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler); // Ensure the assembler context is initialized
+    assembler->comment("; -- ABS (absolute value)");
+    labels.createLabel(*assembler, "abs_end"); // Create a new label
+    // Check if the value in R13 (TOS) is negative
+    assembler->test(asmjit::x86::r13, asmjit::x86::r13);
+    labels.jge(*assembler,"abs_end"); // Jump to end if the value is >= 0
+    // Negate the value in R13 (convert negative to positive)
+    assembler->neg(asmjit::x86::r13);
+    // End of the ABS logic
+    labels.bindLabel(*assembler,"abs_end");
+}
+
+
+
 static void compile_NEG() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
@@ -1448,6 +1576,24 @@ static void compile_NEG() {
     assembler->neg(asmjit::x86::r13); // Negate the value in R13 (TOS = -TOS)
 }
 
+// supports printing integer numbers '.-' prints minus if negative.
+static void compile_NEG_CHECK() {
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+
+    labels.createLabel(*assembler, "neg_check_end");
+    // Emit a comment for debugging clarity
+    assembler->comment("; -- NEG_CHECK");
+    assembler->cmp(asmjit::x86::r13, 0);        // Compare TOS with 0 (signed)
+    labels.jge(*assembler,"neg_check_end");  // If >= 0, skip the negative branch
+    assembler->push(asmjit::x86::rdi);
+    assembler->mov(asmjit::x86::rdi, '-');
+    assembler->call(spit_char);
+    assembler->pop(asmjit::x86::rdi);           // Restore RDI
+    assembler->neg(asmjit::x86::r13);           // Negate TOS if negative
+    // Label: End of NEG_CHECK logic
+    labels.bindLabel(*assembler,"neg_check_end");
+}
 
 static void compile_NOT() {
     asmjit::x86::Assembler *assembler;
@@ -1735,6 +1881,23 @@ void code_generator_add_operator_words() {
                      nullptr
     );
 
+    dict.addCodeWord(".-", "FORTH",
+                  ForthState::EXECUTABLE,
+                  ForthWordType::WORD,
+                  static_cast<ForthFunction>(&compile_NEG_CHECK),
+                  code_generator_build_forth(compile_NEG_CHECK),
+                  nullptr
+ );
+
+    dict.addCodeWord("ABS", "FORTH",
+                     ForthState::EXECUTABLE,
+                     ForthWordType::WORD,
+                     static_cast<ForthFunction>(&compile_ABS),
+                     code_generator_build_forth(compile_ABS),
+                     nullptr
+    );
+
+
     dict.addCodeWord("*", "FORTH",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
@@ -1749,12 +1912,28 @@ void code_generator_add_operator_words() {
                      code_generator_build_forth(compile_DIV),
                      nullptr);
 
+
+    dict.addCodeWord("U/", "FORTH",
+                 ForthState::EXECUTABLE,
+                 ForthWordType::WORD,
+                 static_cast<ForthFunction>(&compile_UDIV),
+                 code_generator_build_forth(compile_UDIV),
+                 nullptr);
+
     dict.addCodeWord("MOD", "FORTH",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
                      static_cast<ForthFunction>(&compile_MOD),
                      code_generator_build_forth(compile_MOD),
                      nullptr);
+
+    dict.addCodeWord("UMOD", "FORTH",
+                     ForthState::EXECUTABLE,
+                     ForthWordType::WORD,
+                     static_cast<ForthFunction>(&compile_UMOD),
+                     code_generator_build_forth(compile_UMOD),
+                     nullptr);
+
 
     dict.addCodeWord("AND", "FORTH",
                      ForthState::EXECUTABLE,
@@ -3031,49 +3210,23 @@ void code_generator_add_immediate_words() {
 
 // IO words
 
-void spit_str(const char *str) {
-    std::cout << str << std::flush;
-}
-
-
-static void spit_number(const int64_t n) {
-    std::cout << std::dec << n << ' ';
-}
-
-// static void spit_number_f(double f) {
-//     std::cout << f << ' ';
+// static void compile_DOT() {
+//     asmjit::x86::Assembler *assembler;
+//     initialize_assembler(assembler);
+//     //
+//     // DROP ( x -- )
+//     assembler->comment("; -- DOT ");
+//
+//     assembler->push(asmjit::x86::rdi); // Push TOS onto the stack
+//     assembler->mov(asmjit::x86::rdi, asmjit::x86::r13); // TOS
+//     assembler->comment("; call spit_number ");
+//     assembler->call(spit_number);
+//     assembler->pop(asmjit::x86::rdi); // Pop TOS off the stack
+//
+//     assembler->mov(asmjit::x86::r13, asmjit::x86::r12); // Move TOS-1 into TOS
+//     assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15)); // Move TOS-2 into TOS-1
+//     assembler->add(asmjit::x86::r15, 8); // Adjust stack pointer
 // }
-
-
-static void spit_char(const char c) {
-    putchar(c);
-}
-
-static void spit_end_line() {
-    std::cout << std::endl;
-}
-
-static void spit_cls() {
-    std::cout << "\033c";
-}
-
-static void compile_DOT() {
-    asmjit::x86::Assembler *assembler;
-    initialize_assembler(assembler);
-    //
-    // DROP ( x -- )
-    assembler->comment("; -- DOT ");
-
-    assembler->push(asmjit::x86::rdi); // Push TOS onto the stack
-    assembler->mov(asmjit::x86::rdi, asmjit::x86::r13); // TOS
-    assembler->comment("; call spit_number ");
-    assembler->call(spit_number);
-    assembler->pop(asmjit::x86::rdi); // Pop TOS off the stack
-
-    assembler->mov(asmjit::x86::r13, asmjit::x86::r12); // Move TOS-1 into TOS
-    assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15)); // Move TOS-2 into TOS-1
-    assembler->add(asmjit::x86::r15, 8); // Adjust stack pointer
-}
 
 static void compile_CHAR(std::deque<ForthToken> &tokens) {
     asmjit::x86::Assembler *assembler;
@@ -3240,12 +3393,12 @@ void code_generator_add_io_words() {
                      &compile_DotString);
 
 
-    dict.addCodeWord(".", "FORTH",
-                     ForthState::EXECUTABLE,
-                     ForthWordType::WORD,
-                     static_cast<ForthFunction>(&compile_DOT),
-                     code_generator_build_forth(compile_DOT),
-                     nullptr);
+    // dict.addCodeWord(".", "FORTH",
+    //                  ForthState::EXECUTABLE,
+    //                  ForthWordType::WORD,
+    //                  static_cast<ForthFunction>(&compile_DOT),
+    //                  code_generator_build_forth(compile_DOT),
+    //                  nullptr);
 
 
     dict.addCodeWord("SPACE", "FORTH",
@@ -3730,73 +3883,6 @@ static void genWhile() {
     assembler->jz(beginLabel.whileLabel);
     assembler->comment("; WHILE body --- start ");
 }
-
-// Test for while
-// SET LOGGING ON
-// : TW 1 BEGIN DUP 10 < WHILE DUP . 1 + REPEAT DROP ;
-/*
-align 16
-; -- enter function: TW2
-; -- enter_function
-L0:
-L2:
-; ----- RBP is set to dictionary entry
-mov rax, 0x600000223980                     ; 48B88039220000600000
-mov rbp, rax                                ; 4889C5
-; -- LITERAL (make space)
-sub r15, 8                                  ; 4983EF08
-mov [r15], r12                              ; 4D8927
-mov r12, r13                                ; 4D89EC
-mov r13, 1                                  ; 49C7C501000000
-; -- TOS is 1
-
-; -- BEGIN
-; LABEL for BEGIN
-L4:
-; -- DUP
-sub r15, 8                                  ; 4983EF08
-mov [r15], r12                              ; 4D8927
-mov r12, r13                                ; 4D89EC
-; Is TOS > 10
-cmp r13, 0xA                                ; 4983FD0A
-setb al                                     ; 0F92C0
-movzx rax, al                               ; 480FB6C0
-neg rax                                     ; 48F7D8
-mov r13, rax                                ; 4989C5
-; -- DUP
-sub r15, 8                                  ; 4983EF08
-mov [r15], r12                              ; 4D8927
-mov r12, r13                                ; 4D89EC
-; -- DOT
-push rdi                                    ; 57
-mov rdi, r13                                ; 4C89EF
-; call spit_number
-call 0x104031150                            ; 40E800000000
-pop rdi                                     ; 5F
-mov r13, r12                                ; 4D89E5
-mov r12, [r15]                              ; 4D8B27
-add r15, 8                                  ; 4983C708
-; Add constant 1
-add r13, 1                                  ; 4983C501
-; WHILE body end   ---
-; -- REPEAT
-; Jump to BEGIN
-short jmp L4                                ; EBC0
-L9:
-; LABEL for LEAVE
-L8:
-; LABEL after REPEAT
-L7:
-; -- DROP
-mov r13, r12                                ; 4D89E5
-mov r12, [r15]                              ; 4D8B27
-add r15, 8                                  ; 4983C708
-; -- exit_label
-L1:
-ret                                         ; C3
-; end of -- TW2 --                                    ; C3
-; end of -- TW --
-*/
 
 
 static void genRedo() {

@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <string>
 #include "asmjit/asmjit.h"
+#include "SignalHandler.h"
 
 class LabelManager {
 public:
@@ -23,7 +24,7 @@ public:
         }
 
         if (!assembler.isInitialized()) {
-            throw std::runtime_error("Assembler not initialized.");
+            SignalHandler::instance().raise(21);
         }
 
         asmjit::Label lbl = assembler.newLabel();
@@ -35,7 +36,8 @@ public:
     asmjit::Label getLabel(const std::string &name) const {
         auto it = _labels.find(name);
         if (it == _labels.end()) {
-            throw std::runtime_error("LabelManager: Label not found: " + name);
+            std::cerr << ("LabelManager: Label not found: " + name);
+            SignalHandler::instance().raise(21);
         }
         return it->second;
     }
@@ -44,7 +46,7 @@ public:
     void bindLabel(asmjit::x86::Assembler &assembler, const std::string &name) const {
         auto it = _labels.find(name);
         if (it == _labels.end()) {
-            std::cout << "LabelManager: Attempting to bind unknown label: " << name;
+            std::cerr << "LabelManager: Attempting to bind unknown label: " << name;
             return;
         }
 

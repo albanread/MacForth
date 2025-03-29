@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <cassert>
 #include <deque>
+#include <ForthDictionary.h>
+
 #include "SymbolTable.h"
 
 bool is_number(const std::string &s) {
@@ -168,6 +170,9 @@ ForthToken Tokenizer::get_next_token(const char **input) {
         token.value = temp;
         token.word_id = word_id;
         token.word_len = strlen(temp);
+        if (const auto &dict = ForthDictionary::instance(); dict.isVariable(temp)) {
+            token.type = TOKEN_VARIABLE;
+        }
         return token;
     }
 

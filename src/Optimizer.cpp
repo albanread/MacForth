@@ -16,6 +16,12 @@ int Optimizer::optimize(const std::deque<ForthToken> &tokens,
     for (size_t i = 0; i < tokens.size(); ++i) {
         const ForthToken &current = tokens[i];
 
+        // Optimize peephole cases: specific patterns like "DUP +" or "SWAP DROP"
+        if (i + 1 < tokens.size() && optimize_peephole_case(tokens, optimized_tokens, i)) {
+            continue; // `optimize_peephole_case` adjusts `i` automatically
+        }
+
+
         // Optimize constant operations: NUMBER followed by OPERATOR
         if (i + 1 < tokens.size() && current.type == TOKEN_NUMBER && is_arithmetic_operator(tokens[i + 1].value)) {
             if (optimize_constant_operation(tokens, optimized_tokens, i)) {
@@ -34,12 +40,7 @@ int Optimizer::optimize(const std::deque<ForthToken> &tokens,
             }
         }
 
-        // Optimize peephole cases: specific patterns like "DUP +" or "SWAP DROP"
-        if (i + 1 < tokens.size() && optimize_peephole_case(tokens, optimized_tokens, i)) {
-            i++; // Skip the second token in the peephole pattern
 
-            continue;
-        }
 
         // Copy token if no optimizations were applied
         optimized_tokens.push_back(current);
@@ -141,30 +142,95 @@ bool Optimizer::optimize_literal_comparison(const std::deque<ForthToken> &tokens
 }
 
 bool Optimizer::optimize_peephole_case(const std::deque<ForthToken> &tokens,
-                                       std::deque<ForthToken> &optimized_tokens, size_t index) {
+                                       std::deque<ForthToken> &optimized_tokens, size_t &index) {
     const ForthToken &current = tokens[index];
     const ForthToken &next = (index + 1 < tokens.size()) ? tokens[index + 1] : ForthToken{};
     const ForthToken &third = (index + 2 < tokens.size()) ? tokens[index + 2] : ForthToken{};
+    const ForthToken &fourth = (index + 3 < tokens.size()) ? tokens[index + 3] : ForthToken{};
+
+    //   R> n + >R (inc pointer on return stack)
+    if (current.value == "R>" && next.type == TOKEN_NUMBER && third.value == "+" && fourth.value == ">R") {
+        auto token = create_optimized_token("INC_R@");
+        token.int_value = next.int_value;
+        optimized_tokens.emplace_back(token);
+        index += 3; // Skip 3 extra tokens
+        optimizations++;
+        return true;
+    }
+
+    //   R> n - >R (dec pointer on return stack)
+    if (current.value == "R>" && next.type == TOKEN_NUMBER && third.value == "-" && fourth.value == ">R") {
+        auto token = create_optimized_token("DEC_R@");
+        token.int_value = next.int_value;
+        optimized_tokens.emplace_back(token);
+        index += 3; // Skip 3 extra tokens
+        optimizations++;
+        return true;
+    }
+
+    // R@ C! the last part of n R@ C! - we can optimize this
+    if (current.value == "R@" && next.value == "C!") {
+        optimized_tokens.emplace_back(create_optimized_token("R@_C!"));
+        optimizations++;
+        index += 1;
+        return true;
+    }
+
+    if (current.value == "R@" && next.value == "!") {
+        optimized_tokens.emplace_back(create_optimized_token("R@_!"));
+        optimizations++;
+        index += 1;
+        return true;
+    }
+
+
+    if (current.type == TOKEN_VARIABLE && next.value == "@") {
+        auto token = create_optimized_token("VAR_@");
+        token.word_id = current.word_id;
+        token.value = current.value;
+        optimized_tokens.emplace_back(token);
+        optimizations++;
+        index += 1;
+        return true;
+    }
+
+    if (current.type == TOKEN_VARIABLE && next.value == "!") {
+        auto token = create_optimized_token("VAR_!");
+        token.word_id = current.word_id;
+        token.value = current.value;
+        optimized_tokens.emplace_back(token);
+        optimizations++;
+        index += 1;
+        return true;
+    }
 
     if (current.value == "DUP" && next.value == "+") {
         optimized_tokens.emplace_back(create_optimized_token("LEA_TOS"));
+        optimizations++;
+        index += 1;
         return true;
     }
 
     if (current.value == "SWAP" && next.value == "DROP") {
         optimized_tokens.emplace_back(create_optimized_token("MOV_TOS_1"));
+        optimizations++;
+        index += 1;
         return true;
     }
 
     // Pattern: DUP ROT → TUCK
     if (current.value == "DUP" && next.value == "ROT") {
         optimized_tokens.emplace_back(create_optimized_token("TUCK"));
+        optimizations++;
+        index += 1;
         return true;
     }
 
     // Pattern: OVER DROP → DUP
     if (current.value == "OVER" && next.value == "DROP") {
         optimized_tokens.emplace_back(create_optimized_token("DUP"));
+        optimizations++;
+        index += 1;
         return true;
     }
 

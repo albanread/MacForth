@@ -14,9 +14,8 @@
 #include <gtest/gtest-printers.h>
 #include "SignalHandler.h"
 #include "Settings.h"
-
-
-
+// MacOS timing functions.
+#include <mach/mach_time.h>
 
 void *code_generator_heap_start = nullptr;
 
@@ -25,7 +24,6 @@ LabelManager labels;
 // Global pointers to track the stack memory
 uintptr_t stack_base = 0; // Start of the stack memory
 uintptr_t stack_top = 0; // The "top" pointer (where R15 begins descending)
-
 
 // Global pointers to track the return stack memory
 uintptr_t return_stack_base = 0; // Start of the return stack memory
@@ -36,7 +34,6 @@ typedef void (*JitFunction)(ForthFunction);
 
 uint64_t fetchR15();
 
-
 // Function to set up the stack pointer and clear registers using inline assembly
 extern "C" void stack_setup_asm(long stackTop) {
     asm volatile(
@@ -45,7 +42,6 @@ extern "C" void stack_setup_asm(long stackTop) {
         "xor %%r13, %%r13\n\t" // Clear R13
         :
         : [stack_pointer] "r"(stackTop) // Input: stackTop passed in via registers
-
     );
 }
 
@@ -81,7 +77,6 @@ void *stack_setup() {
     return stackBase; // Return the base of the allocated stack for any further usage
 }
 
-
 extern "C" void return_stack_setup_asm(long stackTop) {
     asm volatile(
         "mov %[stack_pointer], %%r14\n\t" // Set R14 to the stackTop address
@@ -108,7 +103,6 @@ void *return_stack_setup() {
 
     // Step 3: Compute the return stack top
     void *return_stackTop = static_cast<char *>(return_stackBase) + STACK_SIZE - UNDERFLOW_GAP;
-
 
     return_stack_base = reinterpret_cast<uintptr_t>(return_stackBase);
     return_stack_top = reinterpret_cast<uintptr_t>(return_stackTop);
@@ -183,6 +177,40 @@ void printHeapGrowth(void *heap_start) {
 
 #pragma clang diagnostic pop
 
+#include <mach/mach_init.h>
+#include <mach/thread_act.h>
+#include <mach/thread_policy.h>
+
+void pinToCore(int coreId) {
+    thread_affinity_policy_data_t policy = {coreId};
+    kern_return_t kr = thread_policy_set(mach_thread_self(),
+                                         THREAD_AFFINITY_POLICY,
+                                         reinterpret_cast<thread_policy_t>(&policy),
+                                         1);
+    if (kr == KERN_SUCCESS) {
+        std::cout << "Thread pinned to core " << coreId << "." << std::endl;
+    } else {
+        std::cerr << "Failed to pin thread to core " << coreId << "." << std::endl;
+    }
+}
+
+
+void unpinThread() {
+    thread_affinity_policy_data_t policy = {0}; // Use 0 to clear affinity.
+    kern_return_t kr = thread_policy_set(
+        mach_thread_self(),
+        THREAD_AFFINITY_POLICY,
+        reinterpret_cast<thread_policy_t>(&policy),
+        1 // Must be the number of elements in the policy (1 in this case).
+    );
+
+    if (kr == KERN_SUCCESS) {
+        std::cout << "Thread unpinned (default core scheduling restored)." << std::endl;
+    } else {
+        std::cerr << "Failed to unpin thread. Error code: " << kr << std::endl;
+    }
+}
+
 
 void code_generator_initialize() {
     track_heap();
@@ -214,7 +242,7 @@ void code_generator_initialize() {
 
     dict.setVocabulary("FORTH");
     dict.setSearchOrder({"FORTH", "FRAGMENTS"});
-
+    code_generator_add_variables();
     code_generator_add_stack_words();
     code_generator_add_operator_words();
     code_generator_add_immediate_words();
@@ -242,6 +270,18 @@ void compile_pushLiteral(const int64_t literal) {
 
     assembler->mov(asmjit::x86::r13, asmjit::imm(literal));
     assembler->commentf("; -- TOS is %lld \n", literal);
+}
+
+void compile_pushVariableAddress(const int64_t literal, const std::string &name) {
+    asmjit::x86::Assembler *assembler;
+    if (initialize_assembler(assembler)) return;
+
+    assembler->commentf("; -- Variable %s", name.c_str());
+    assembler->sub(asmjit::x86::r15, 8);
+    assembler->mov(asmjit::x86::ptr(asmjit::x86::r15), asmjit::x86::r12);
+    assembler->mov(asmjit::x86::r12, asmjit::x86::r13);
+    assembler->mov(asmjit::x86::r13, asmjit::imm(literal));
+    assembler->commentf("; -- TOS holds address %lld \n", literal);
 }
 
 
@@ -275,7 +315,7 @@ void compile_pushLiteral(const int64_t literal) {
     if (initialize_assembler(assembler)) return;
 
     assembler->comment("; ----- pushDS");
-    assembler->comment("; Save TOS (R13) to the data stack and update R12/R13");
+    assembler->comment("; Save TOS (R13) to data stack update R12/R13");
 
     // Save the current TOS (R13) to the stack
     assembler->mov(asmjit::x86::qword_ptr(asmjit::x86::r15), asmjit::x86::r13);
@@ -304,7 +344,7 @@ void compile_pushLiteral(const int64_t literal) {
     if (initialize_assembler(assembler)) return;
 
     assembler->comment("; ----- loadDS");
-    assembler->comment("; Dereference a memory address and push the value onto the stack");
+    assembler->comment("; Dereference memory address push value to stack");
 
     // Load the address into RAX
     assembler->mov(asmjit::x86::rax, dataAddress);
@@ -319,16 +359,12 @@ void compile_pushLiteral(const int64_t literal) {
 [[maybe_unused]] static void loadFromDS() {
     asmjit::x86::Assembler *assembler;
     if (initialize_assembler(assembler)) return;
-
     assembler->comment("; -- load from DS");
     assembler->comment("; Pop address, dereference, push the value");
-
     // Pop the address into RAX
     popDS(asmjit::x86::rax);
-
     // Dereference the address to get the value
     assembler->mov(asmjit::x86::rax, asmjit::x86::ptr(asmjit::x86::rax));
-
     // Push the value onto the data stack
     pushDS(asmjit::x86::rax);
 }
@@ -338,13 +374,10 @@ void compile_pushLiteral(const int64_t literal) {
     if (initialize_assembler(assembler)) return;
     assembler->comment("; ----- storeDS");
     assembler->comment("; Pop and store at address");
-
     // Pop the value into RAX
     popDS(asmjit::x86::rax);
-
     // Load the specified address into RCX
     assembler->mov(asmjit::x86::rcx, dataAddress);
-
     // Store the value at the address
     assembler->mov(asmjit::x86::qword_ptr(asmjit::x86::rcx), asmjit::x86::rax);
 }
@@ -354,15 +387,25 @@ void compile_pushLiteral(const int64_t literal) {
     if (initialize_assembler(assembler)) return;
     assembler->comment("; -- store from DS");
     assembler->comment("; Pop address and value, store  value in address");
-
     // Pop the address into RCX
     popDS(asmjit::x86::rcx);
-
     // Pop the value into RAX
     popDS(asmjit::x86::rax);
-
     // Store the value from RAX at the address in RCX
     assembler->mov(asmjit::x86::qword_ptr(asmjit::x86::rcx), asmjit::x86::rax);
+}
+
+[[maybe_unused]] static void cstoreFromDS() {
+    asmjit::x86::Assembler *assembler;
+    if (initialize_assembler(assembler)) return;
+    assembler->comment("; -- cstore from DS");
+    assembler->mov(asmjit::x86::rcx, asmjit::x86::r13);
+    assembler->mov(asmjit::x86::rax, asmjit::x86::r12);
+    assembler->mov(asmjit::x86::byte_ptr(asmjit::x86::rcx), asmjit::x86::al);
+    assembler->comment("; -- tidy with 2DROP ");
+    assembler->mov(asmjit::x86::r13, asmjit::x86::ptr(asmjit::x86::r15)); // Load new TOS
+    assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15,8)); // Load new TOS-1
+    assembler->add(asmjit::x86::r15, 16); // Adjust stack pointer
 }
 
 [[maybe_unused]] static void fetchFromDS() {
@@ -383,12 +426,30 @@ void compile_pushLiteral(const int64_t literal) {
 }
 
 
+[[maybe_unused]] static void cfetchFromDS() {
+    asmjit::x86::Assembler *assembler;
+    if (initialize_assembler(assembler)) return;
+
+    assembler->comment("; -- cfetch from DS (C@)");
+    assembler->comment("; Pop address, fetch byte value, and push");
+
+    // Pop the address from the stack into RCX
+    popDS(asmjit::x86::rcx);
+
+    // Fetch the **byte** from the address (RCX) into RAX (low byte AL)
+    assembler->movzx(asmjit::x86::rax, asmjit::x86::byte_ptr(asmjit::x86::rcx)); // Zero-extend byte to RAX
+
+    // Push the fetched byte (RAX) back onto the stack
+    pushDS(asmjit::x86::rax);
+}
+
+
 [[maybe_unused]] static void pushRS(const asmjit::x86::Gp &reg) {
     asmjit::x86::Assembler *assembler;
     if (initialize_assembler(assembler)) return;
     //
     assembler->comment("; -- pushRS from register");
-    assembler->comment("; save value to the return stack (r14)");
+    assembler->comment("; save value to return stack (r14)");
 
     assembler->sub(asmjit::x86::r14, 8);
     assembler->mov(asmjit::x86::qword_ptr(asmjit::x86::r14), reg);
@@ -399,7 +460,7 @@ void compile_pushLiteral(const int64_t literal) {
     if (initialize_assembler(assembler)) return;
     //
     assembler->comment("; -- popRS to register");
-    assembler->comment("; fetch value from the return stack (r14)");
+    assembler->comment("; -- fetch value from return stack (r14)");
 
     assembler->mov(reg, asmjit::x86::qword_ptr(asmjit::x86::r14));
     assembler->add(asmjit::x86::r14, 8);
@@ -487,8 +548,6 @@ ForthFunction code_generator_finalizeFunction(const std::string &name) {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     assembler->comment(funcName.c_str());
-
-
     return JitContext::instance().finalize();
 }
 
@@ -503,14 +562,14 @@ void compile_call_C(void (*func)()) {
     assembler->push(asmjit::x86::rdi);
     assembler->call(func);
     assembler->pop(asmjit::x86::rdi);
-    assembler->comment("; --- end call c ");
+
 }
 
 void compile_call_forth(void (*func)(), const std::string &forth_word) {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     // keep stack 16 byte aligned.
-    assembler->commentf("; --- call %s", forth_word.c_str());
+    assembler->commentf("; --- call forth %s", forth_word.c_str());
     assembler->sub(asmjit::x86::rsp, 8);
     assembler->call(func);
     assembler->add(asmjit::x86::rsp, 8);
@@ -557,7 +616,7 @@ static void compile_ROT() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
 
-    assembler->comment("; --ROT ");
+    assembler->comment("; -- ROT ");
 
     // Save TOS (x1, R13) into a temporary register (RAX)
     assembler->mov(asmjit::x86::rax, asmjit::x86::r13);
@@ -571,29 +630,29 @@ static void compile_ROT() {
     // Move the original TOS (x1, saved in RAX) into TOS-1 (R12)
     assembler->mov(asmjit::x86::r12, asmjit::x86::rax);
 
-    assembler->comment("; End ROT ");
+
 }
 
 static void compile_MROT() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     // -ROT ( x1 x2 x3 -- x3 x1 x2 )
-    assembler->comment("; ---ROT ");
+    assembler->comment("; --- -ROT ");
     assembler->mov(asmjit::x86::rax, asmjit::x86::r13); // Save TOS (x3) in rax
     assembler->mov(asmjit::x86::r13, asmjit::x86::ptr(asmjit::x86::r15)); // Move x2 to TOS
     assembler->mov(asmjit::x86::ptr(asmjit::x86::r15), asmjit::x86::r12); // Move x1 to stack (TOS-2)
     assembler->mov(asmjit::x86::r12, asmjit::x86::rax); // Restore x3 as TOS-1
 
-    assembler->comment("; End -ROT ");
+
 }
 
 static void compile_SWAP() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     // SWAP ( x1 x2 -- x2 x1 )
-    assembler->comment("; --SWAP ");
+    assembler->comment("; -- SWAP ");
     assembler->xchg(asmjit::x86::r13, asmjit::x86::r12); // Swap TOS and TOS-1
-    assembler->comment("; End SWAP ");
+
 }
 
 static void compile_OVER() {
@@ -601,12 +660,11 @@ static void compile_OVER() {
     initialize_assembler(assembler);
     using namespace asmjit;
     // OVER ( x1 x2 -- x1 x2 x1 )
-    assembler->comment("; --OVER ");
+    assembler->comment("; -- OVER ");
     assembler->sub(x86::r15, imm(8)); // Decrement stack pointer to create space for new value
     assembler->mov(ptr(x86::r15), x86::r12); // Store TOS-1 (r12) in memory at [r15]
     assembler->mov(x86::r12, x86::r13); // Update TOS-1 (r12) to TOS (r13)
     assembler->mov(x86::r13, ptr(x86::r15)); // Reload the duplicated value from memory into TOS (r13)
-
 }
 
 static void compile_NIP() {
@@ -616,16 +674,12 @@ static void compile_NIP() {
     assembler->comment("; -- NIP ");
     assembler->add(asmjit::x86::r15, 8); // Discard TOS-1 (move stack pointer up)
     assembler->mov(asmjit::x86::r12, asmjit::x86::r13); // Move TOS into TOS-1
-
-
 }
 
 // R15 full descending stack R13=TOS, R12=TOS-1 [R15]=TOS-2
 static void compile_TUCK() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
-
-
     assembler->comment("; -- TUCK ");
 
     // Step 1: Allocate space for new TOS-2 (push duplicate of TOS)
@@ -633,8 +687,6 @@ static void compile_TUCK() {
 
     // Step 2: Store duplicate of TOS (x2 in R13) into the new slot.
     assembler->mov(asmjit::x86::ptr(asmjit::x86::r15), asmjit::x86::r13);
-
-
 }
 
 static void compile_2DUP() {
@@ -653,9 +705,9 @@ static void compile_2DROP() {
     initialize_assembler(assembler);
     // 2DROP ( x1 x2 -- )
     assembler->comment("; -- 2DROP ");
-    assembler->add(asmjit::x86::r15, 16); // Deallocate two 64-bit values from stack
-    assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15, -16)); // Load new TOS
-    assembler->mov(asmjit::x86::r13, asmjit::x86::ptr(asmjit::x86::r15, -8)); // Load new TOS-1
+    assembler->mov(asmjit::x86::r13, asmjit::x86::ptr(asmjit::x86::r15)); // Load new TOS
+    assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15,8)); // Load new TOS-1
+    assembler->add(asmjit::x86::r15, 16); // Adjust stack pointer
 }
 
 
@@ -715,6 +767,7 @@ static void compile_ROLL() {
     assembler->mov(asmjit::x86::ptr(asmjit::x86::r15), asmjit::x86::rcx);
     // Move the saved nth element to the top of the stack
 }
+
 
 static void compile_SP_STORE() {
     asmjit::x86::Assembler *assembler;
@@ -882,13 +935,12 @@ static void Compile_toR() {
     initialize_assembler(assembler);
 
     // >R ( x -- ) ( R: -- x )
-    assembler->comment("; -->R ");
+    assembler->comment("; -- >R ");
     assembler->sub(asmjit::x86::r14, 8); // Allocate space on return stack
     assembler->mov(asmjit::x86::ptr(asmjit::x86::r14), asmjit::x86::r13); // Store TOS in return stack
     assembler->mov(asmjit::x86::r13, asmjit::x86::r12); // Move TOS-1 to TOS
     assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15)); // Load TOS-2 into TOS-1
     assembler->add(asmjit::x86::r15, 8); // Adjust data stack pointer
-    assembler->comment("; End >R ");
 }
 
 // useful for DO .. LOOP
@@ -897,7 +949,7 @@ static void Compile_2toR() {
     initialize_assembler(assembler);
 
     // 2>R ( x1 x2 -- ) ( R: -- x1 x2 )
-    assembler->comment("; --2>R ");
+    assembler->comment("; -- 2>R ");
 
     assembler->sub(asmjit::x86::r14, 8);
     assembler->mov(asmjit::x86::ptr(asmjit::x86::r14), asmjit::x86::r12);
@@ -921,7 +973,6 @@ static void Compile_fromR() {
     assembler->mov(asmjit::x86::r12, asmjit::x86::r13); // Move TOS to TOS-1
     assembler->mov(asmjit::x86::r13, asmjit::x86::ptr(asmjit::x86::r14)); // Load from return stack into TOS
     assembler->add(asmjit::x86::r14, 8); // Adjust return stack pointer
-    assembler->comment("; End R> ");
 }
 
 static void Compile_2fromR() {
@@ -941,40 +992,35 @@ static void Compile_2fromR() {
     assembler->add(asmjit::x86::r14, 8); // Adjust return stack pointer (pop x2)
 }
 
-
+// copy of return stack
 static void Compile_rFetch() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     // R@ ( -- x ) ( R: x -- x )
-    assembler->comment("; --R@ ");
-    assembler->sub(asmjit::x86::r15, 8); // Allocate space on data stack
-    assembler->mov(asmjit::x86::ptr(asmjit::x86::r15), asmjit::x86::r12); // Store TOS-1 in stack
-    assembler->mov(asmjit::x86::r12, asmjit::x86::r13); // Move TOS to TOS-1
+    assembler->comment("; -- R@ ");
+    compile_DUP();
     assembler->mov(asmjit::x86::r13, asmjit::x86::ptr(asmjit::x86::r14)); // Copy return stack top into TOS
-    assembler->comment("; End R@ ");
 }
 
 static void Compile_rpAt() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     // RP@ ( -- addr )
-    assembler->comment("; --RP@ ");
+    assembler->comment("; -- RP@ ");
     assembler->sub(asmjit::x86::r15, 8); // Allocate space on data stack
     assembler->mov(asmjit::x86::ptr(asmjit::x86::r15), asmjit::x86::r13); // Store current TOS in stack
     assembler->mov(asmjit::x86::r13, asmjit::x86::r14); // Load return stack pointer into TOS
-    assembler->comment("; End RP@ ");
 }
 
 static void Compile_rpStore() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     // RP! ( addr -- )
-    assembler->comment("; --RP! ");
+    assembler->comment("; -- RP! ");
     assembler->mov(asmjit::x86::r14, asmjit::x86::r13); // Update R14 with new return stack pointer
     assembler->mov(asmjit::x86::r13, asmjit::x86::ptr(asmjit::x86::r15)); // Load new TOS from stack
     assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15, 8)); // Load new TOS-1 from stack
     assembler->add(asmjit::x86::r15, 8); // Adjust data stack pointer
-    assembler->comment("; End RP! ");
 }
 
 // optional Return stack words
@@ -986,9 +1032,8 @@ static void Compile_rDrop() {
         return;
     }
 
-    assembler->comment("; --RDROP ");
+    assembler->comment("; -- RDROP ");
     assembler->add(asmjit::x86::r14, 8); // Adjust return stack pointer, dropping the top item
-    assembler->comment("; End RDROP ");
 }
 
 static void Compile_r2Drop() {
@@ -997,10 +1042,8 @@ static void Compile_r2Drop() {
         SignalHandler::instance().raise(10);
         return;
     }
-
-    assembler->comment("; --R2DROP ");
+    assembler->comment("; -- R2DROP ");
     assembler->add(asmjit::x86::r14, 16); // Adjust return stack pointer to drop two values
-    assembler->comment("; End R2DROP ");
 }
 
 static void Compile_rSwap() {
@@ -1010,12 +1053,11 @@ static void Compile_rSwap() {
         return;
     }
 
-    assembler->comment("; --R>R ");
+    assembler->comment("; -- R>R ");
     assembler->mov(asmjit::x86::rax, asmjit::x86::ptr(asmjit::x86::r14)); // Load top of return stack into RAX
     assembler->mov(asmjit::x86::rbx, asmjit::x86::ptr(asmjit::x86::r14, 8)); // Load second element into RBX
     assembler->mov(asmjit::x86::ptr(asmjit::x86::r14), asmjit::x86::rbx); // Swap: Store RBX at top
     assembler->mov(asmjit::x86::ptr(asmjit::x86::r14, 8), asmjit::x86::rax); // Swap: Store RAX in second position
-    assembler->comment("; End R>R ");
 }
 
 
@@ -1079,7 +1121,6 @@ void code_generator_add_stack_words() {
                      code_generator_build_forth(Compile_rSwap),
                      nullptr);
 
-
     dict.addCodeWord("DEPTH", "FORTH",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
@@ -1094,7 +1135,6 @@ void code_generator_add_stack_words() {
                      reinterpret_cast<ForthFunction>(rdepth),
                      nullptr);
 
-
     // storeFromDS !
     dict.addCodeWord("!", "FORTH",
                      ForthState::EXECUTABLE,
@@ -1103,13 +1143,27 @@ void code_generator_add_stack_words() {
                      code_generator_build_forth(storeFromDS),
                      nullptr);
 
+    dict.addCodeWord("C!", "FORTH",
+                     ForthState::EXECUTABLE,
+                     ForthWordType::WORD,
+                     static_cast<ForthFunction>(&cstoreFromDS),
+                     code_generator_build_forth(cstoreFromDS),
+                     nullptr);
+
+    dict.addCodeWord("C@", "FORTH",
+                     ForthState::EXECUTABLE,
+                     ForthWordType::WORD,
+                     static_cast<ForthFunction>(&cfetchFromDS),
+                     code_generator_build_forth(cfetchFromDS),
+                     nullptr);
+
+
     dict.addCodeWord("@", "FORTH",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
                      static_cast<ForthFunction>(&fetchFromDS),
                      code_generator_build_forth(fetchFromDS),
                      nullptr);
-
 
     // R@
     dict.addCodeWord("R@", "FORTH",
@@ -1119,7 +1173,7 @@ void code_generator_add_stack_words() {
                      code_generator_build_forth(Compile_rFetch),
                      nullptr);
 
-    dict.addCodeWord("R@", "FORTH",
+    dict.addCodeWord("RP@", "FORTH",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
                      static_cast<ForthFunction>(&Compile_rpAt),
@@ -1294,11 +1348,10 @@ static void compile_ADD() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     assembler->comment("; -- ADD");
-
-    assembler->add(asmjit::x86::r12, asmjit::x86::r13); // Add TOS (R13) to TOS-1 (R12)
-    assembler->mov(asmjit::x86::r13, asmjit::x86::r12); // Promote TOS-1 to TOS
-    assembler->add(asmjit::x86::r15, 8); // Adjust stack pointer to pop TOS
-    assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15)); // Load new TOS-1 from memory
+    assembler->mov(asmjit::x86::rax, asmjit::x86::r13);
+    assembler->add(asmjit::x86::rax, asmjit::x86::r12);
+    compile_DROP();
+    assembler->mov(asmjit::x86::r13, asmjit::x86::rax);
 }
 
 static void compile_SUB() {
@@ -1307,19 +1360,18 @@ static void compile_SUB() {
         SignalHandler::instance().raise(10);
         return;
     }
-    assembler->comment("; --SUB");
+    assembler->comment("; -- SUB");
+    assembler->mov(asmjit::x86::rax, asmjit::x86::r12);
+    assembler->sub(asmjit::x86::rax, asmjit::x86::r13);
+    compile_DROP();
+    assembler->mov(asmjit::x86::r13, asmjit::x86::rax);
 
-    assembler->sub(asmjit::x86::r12, asmjit::x86::r13); // Subtract TOS (R13) from TOS-1 (R12)
-    assembler->mov(asmjit::x86::r13, asmjit::x86::r12); // Promote TOS-1 to TOS
-    assembler->add(asmjit::x86::r15, 8); // Adjust stack pointer to pop TOS
-    assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15)); // Load new TOS-1 from memory
 }
 
 static void compile_MUL() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     assembler->comment("; -- * MUL");
-
     assembler->imul(asmjit::x86::r12, asmjit::x86::r13); // Multiply TOS (R13) by TOS-1 (R12)
     compile_DROP(); // Drop TOS-1
 }
@@ -1327,14 +1379,12 @@ static void compile_MUL() {
 static void compile_DIV() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
-    assembler->comment("; --DIV");
-
+    assembler->comment("; -- DIV");
     assembler->mov(asmjit::x86::rax, asmjit::x86::r12); // Move TOS-1 (R12) into RAX
     assembler->cqo(); // Sign-extend RAX into RDX:RAX
-    assembler->idiv(asmjit::x86::r13); // Divide RDX:RAX by TOS (R13)
-    assembler->mov(asmjit::x86::r13, asmjit::x86::rax); // Move quotient (RAX) into TOS (R13)
-    assembler->add(asmjit::x86::r15, 8); // Adjust stack pointer to pop TOS
-    assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15)); // Load new TOS-1 from memory
+    assembler->idiv(asmjit::x86::r13);
+    compile_DROP(); // Drop TOS-1
+    assembler->mov(asmjit::x86::r13, asmjit::x86::rax);
 }
 
 static void compile_MOD() {
@@ -1343,22 +1393,20 @@ static void compile_MOD() {
         SignalHandler::instance().raise(10);
         return;
     }
-    assembler->comment("; --MOD");
-
+    assembler->comment("; -- MOD");
     assembler->mov(asmjit::x86::rax, asmjit::x86::r12); // Move TOS-1 (R12) into RAX
     assembler->cqo(); // Sign-extend RAX into RDX:RAX
     assembler->idiv(asmjit::x86::r13); // Divide RDX:RAX by TOS (R13)
+    compile_DROP(); // Drop TOS-1
     assembler->mov(asmjit::x86::r13, asmjit::x86::rdx); // Move remainder (RDX) into TOS (R13)
-    assembler->add(asmjit::x86::r15, 8); // Adjust stack pointer to pop TOS
-    assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15)); // Load new TOS-1 from memory
+
 }
 
 static void compile_AND() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
 
-    assembler->comment("; --AND");
-
+    assembler->comment("; -- AND");
     assembler->and_(asmjit::x86::r12, asmjit::x86::r13); // Perform bitwise AND
     assembler->mov(asmjit::x86::r13, asmjit::x86::r12); // Promote TOS-1 to TOS
     assembler->add(asmjit::x86::r15, 8); // Adjust stack pointer to pop TOS
@@ -1369,7 +1417,7 @@ static void compile_OR() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     //
-    assembler->comment("; --OR");
+    assembler->comment("; -- OR");
 
     assembler->or_(asmjit::x86::r12, asmjit::x86::r13); // Perform bitwise OR
     assembler->mov(asmjit::x86::r13, asmjit::x86::r12); // Promote TOS-1 to TOS
@@ -1393,12 +1441,19 @@ static void compile_XOR() {
     assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15)); // Pull the new TOS-1 from memory
 }
 
+static void compile_NEG() {
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+    assembler->comment("; -- NEGATE");
+    assembler->neg(asmjit::x86::r13); // Negate the value in R13 (TOS = -TOS)
+}
+
+
 static void compile_NOT() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     //
     assembler->comment("; -- NOT");
-
     assembler->test(asmjit::x86::r13, asmjit::x86::r13); // Test if TOS (R13) is zero
     assembler->setz(asmjit::x86::al); // Set AL to 1 if zero, 0 otherwise
     assembler->movzx(asmjit::x86::r13, asmjit::x86::al); // Zero-extend AL to R13 (R13 = 1 or 0)
@@ -1433,7 +1488,7 @@ static void compile_SCALE() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     //
-    assembler->comment("; --SCALE */ ");
+    assembler->comment("; -- SCALE */ ");
 
     // Step 1: Load `a` (TOS-2) from [R15] into RAX
     assembler->mov(asmjit::x86::rax, asmjit::x86::ptr(asmjit::x86::r15)); // RAX = [R15] (TOS-2)
@@ -1510,7 +1565,7 @@ static void compile_GT() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
 
-    assembler->comment("; --> (greater than)");
+    assembler->comment("; -- > (greater than)");
 
     assembler->cmp(asmjit::x86::r12, asmjit::x86::r13);
     assembler->setg(asmjit::x86::al);
@@ -1526,7 +1581,7 @@ static void compile_LE() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
 
-    assembler->comment("; --<= (less than or equal to)");
+    assembler->comment("; -- <= (less than or equal to)");
 
     assembler->cmp(asmjit::x86::r12, asmjit::x86::r13);
     assembler->setle(asmjit::x86::al);
@@ -1672,6 +1727,14 @@ void code_generator_add_operator_words() {
                      nullptr
     );
 
+    dict.addCodeWord("NEGATE", "FORTH",
+                     ForthState::EXECUTABLE,
+                     ForthWordType::WORD,
+                     static_cast<ForthFunction>(&compile_NEG),
+                     code_generator_build_forth(compile_NEG),
+                     nullptr
+    );
+
     dict.addCodeWord("*", "FORTH",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
@@ -1733,6 +1796,16 @@ void runImmediateString(std::deque<ForthToken> &tokens) {
 }
 
 
+void runImmediateCHAR(std::deque<ForthToken> &tokens) {
+    if (tokens.empty()) return; // Exit early if no tokens to process
+    // Get and remove the first token
+    const ForthToken first = tokens.front();
+    tokens.erase(tokens.begin());
+    const int c = static_cast<unsigned char>(first.value[0]);
+    cpush(c);
+}
+
+
 // CREATE creates a new WORD
 void runImmediateCREATE(std::deque<ForthToken> &tokens) {
     if (tokens.empty()) return; // Exit early if no tokens to process
@@ -1763,7 +1836,7 @@ void runImmediateCREATE(std::deque<ForthToken> &tokens) {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     //
-    assembler->commentf("; Push the words own address %lu", address);
+    assembler->commentf("; Push words own address %lu", address);
     assembler->mov(asmjit::x86::rax, asmjit::imm(address));
     pushDS(asmjit::x86::rax);
     compile_return();
@@ -1817,12 +1890,13 @@ void runImmediateVARIABLE(std::deque<ForthToken> &tokens) {
     initialize_assembler(assembler);
 
     // Add runtime logic to resolve and push the variable's data pointer from entry->data
-    assembler->commentf("; Push the variable's data address from entry->data using rbp");
+    assembler->commentf("; Push variable's data address from entry->data using rbp");
 
     // Move the address of the dictionary entry into RAX
     assembler->mov(asmjit::x86::rax, asmjit::x86::ptr(asmjit::x86::rbp, offsetof(ForthDictionaryEntry, data)));
     // Push the resolved pointer onto the data stack
-    pushDS(asmjit::x86::rax);
+    compile_DUP();
+    assembler->mov(asmjit::x86::r13, asmjit::x86::rax);
 
     // Add a NOP and RET for procedure alignment
 
@@ -1837,6 +1911,181 @@ void runImmediateVARIABLE(std::deque<ForthToken> &tokens) {
     // Assign the finalized function to the dictionary entry's executable field
     entry->executable = func;
 }
+
+// used to allow c to create variable
+bool create_variable(const std::string &name, int64_t initialValue) {
+    auto &dict = ForthDictionary::instance();
+
+    // Create the dictionary entry for the variable
+    auto entry = dict.addCodeWord(
+        name,
+        "FORTH",
+        ForthState::EXECUTABLE,
+        ForthWordType::VARIABLE,
+        nullptr, // We'll set the executable later, similar to runImmediateVARIABLE
+        nullptr,
+        nullptr);
+
+    // Check if the dictionary entry was successfully created
+    if (!entry) {
+        SignalHandler::instance().raise(11); // Handle error (e.g., invalid token)
+        return false;
+    }
+
+    // Allocate memory for the variable
+    auto data_ptr = WordHeap::instance().allocate(entry->id, sizeof(int64_t));
+    if (!data_ptr || (reinterpret_cast<uintptr_t>(data_ptr) % alignof(int64_t) != 0)) {
+        SignalHandler::instance().raise(3); // Handle memory allocation error
+        return false;
+    }
+
+    // Set the dictionary entry's data field to the allocated memory
+    entry->data = data_ptr;
+
+    // Initialize the memory with the initial value
+    *reinterpret_cast<int64_t *>(data_ptr) = initialValue;
+
+    // Generate and finalize the executable function (push variable pointer onto the data stack)
+    code_generator_startFunction("CREATE_VARIABLE");
+
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+
+    assembler->comment("; Push variable's data address");
+    // Move the address of the data pointer into RAX
+    assembler->mov(asmjit::x86::rax, asmjit::x86::ptr(asmjit::x86::rbp, offsetof(ForthDictionaryEntry, data)));
+    compile_DUP();
+    assembler->mov(asmjit::x86::r13, asmjit::x86::rax);
+    assembler->ret(); // Return from the function
+
+    // Finalize the compiled function
+    const auto func = JitContext::instance().finalize();
+    if (!func) {
+        SignalHandler::instance().raise(12); // Handle function finalization error
+        return false;
+    }
+
+    // Assign the finalized function to the entry's executable field
+    entry->executable = func;
+
+    return true; // Successfully created the variable
+}
+
+// create variable and allot bytes to it from c.
+bool create_variable_allot(const std::string &name, size_t byteCount) {
+    auto &dict = ForthDictionary::instance();
+
+    // Create the dictionary entry for the variable
+    auto entry = dict.addCodeWord(
+        name,
+        "FORTH",
+        ForthState::EXECUTABLE,
+        ForthWordType::VARIABLE,
+        nullptr, // We'll set the executable later
+        nullptr,
+        nullptr);
+
+    // Check if the dictionary entry was successfully created
+    if (!entry) {
+        SignalHandler::instance().raise(11); // Handle error (e.g., invalid token)
+        return false;
+    }
+
+    // Allocate the requested number of bytes for the variable
+    auto data_ptr = WordHeap::instance().allocate(entry->id, byteCount);
+    if (!data_ptr || (reinterpret_cast<uintptr_t>(data_ptr) % alignof(uint8_t) != 0)) {
+        SignalHandler::instance().raise(3); // Handle memory allocation error
+        return false;
+    }
+
+    // Set the dictionary entry's data field to the allocated memory
+    entry->data = data_ptr;
+
+    // Clear the allocated memory for safety (optional step, good for fresh memory use)
+    memset(data_ptr, 0, byteCount);
+
+    // Generate and finalize the executable function (push variable pointer onto the data stack)
+    code_generator_startFunction("CREATE_VARIABLE_ALLOT");
+
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+
+    assembler->comment("; Push variable's data address");
+    // Move the address of the data pointer into RAX
+    assembler->mov(asmjit::x86::rax, asmjit::x86::ptr(asmjit::x86::rbp, offsetof(ForthDictionaryEntry, data)));
+    compile_DUP();
+    assembler->mov(asmjit::x86::r13, asmjit::x86::rax);
+    assembler->ret(); // Return from the function
+
+    // Finalize the compiled function
+    const auto func = JitContext::instance().finalize();
+    if (!func) {
+        SignalHandler::instance().raise(12); // Handle function finalization error
+        return false;
+    }
+
+    // Assign the finalized function to the entry's executable field
+    entry->executable = func;
+
+    return true; // Successfully created the variable with allotted memory
+}
+
+// shortcut for reading variable e.g base @
+void runImmediateVAR_AT(std::deque<ForthToken> &tokens) {
+
+    if (tokens.empty()) return; // Exit early if no tokens to process
+    // Get and remove the first token
+    const ForthToken first = tokens.front();
+    auto &dict = ForthDictionary::instance();
+    auto var_word = dict.findWord(first.value.c_str());
+
+    if (!var_word || var_word->type != ForthWordType::VARIABLE) {
+        std::cout << "Error: " << first.value << " is not a variable" << std::endl;
+        SignalHandler::instance().raise(11);
+    }
+    auto address = reinterpret_cast<uintptr_t>(var_word->data);
+
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+    assembler->commentf("; %s @ ", first.value.c_str());
+    assembler->mov(asmjit::x86::rax, asmjit::imm(address));
+    compile_DUP();
+    assembler->mov(asmjit::x86::r13, asmjit::x86::ptr(asmjit::x86::rax));
+
+}
+
+
+// shortcut for seting variable e.g n base !
+void runImmediateVAR_STORE(std::deque<ForthToken> &tokens) {
+
+    if (tokens.empty()) return; // Exit early if no tokens to process
+    // Get and remove the first token
+    const ForthToken first = tokens.front();
+    auto &dict = ForthDictionary::instance();
+    auto var_word = dict.findWord(first.value.c_str());
+
+    if (!var_word || var_word->type != ForthWordType::VARIABLE) {
+        std::cout << "Error: " << first.value << " is not a variable" << std::endl;
+        SignalHandler::instance().raise(11);
+    }
+    auto address = reinterpret_cast<uintptr_t>(var_word->data);
+
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+    assembler->commentf("; %s ! ", first.value.c_str());
+    assembler->mov(asmjit::x86::rax, asmjit::imm(address));
+    assembler->mov(asmjit::x86::ptr(asmjit::x86::rax), asmjit::x86::r13);
+    compile_DROP();
+
+}
+
+// this is where predefined variables are created
+void code_generator_add_variables() {
+    create_variable("BASE", 10);
+    create_variable_allot("PAD", 512);
+}
+
+
 
 // default deferred word behaviour
 static void defer_initial() {
@@ -1956,6 +2205,8 @@ void display_show_help() {
     std::cout << " words" << std::endl;
     std::cout << " chain" << std::endl;
     std::cout << " allot" << std::endl;
+    std::cout << " memory" << std::endl;
+    std::cout << " usage" << std::endl;
     std::cout << " strings" << std::endl;
     std::cout << " words_detailed" << std::endl;
 }
@@ -1981,6 +2232,10 @@ void runImmediateSHOW(std::deque<ForthToken> &tokens) {
         for (int i = 0; i < 16; i++) {
             dict.displayWordChain(i);
         }
+    } else if (thing == "MEMORY") {
+        JitContext::instance().displayAsmJitMemoryUsage();
+    } else if (thing == "USAGE") {
+        JitContext::instance().reportMemoryUsage();
     } else if (thing == "STRINGS") {
         auto &stringStorage = StringStorage::instance();
         stringStorage.displayInternedStrings();
@@ -1994,6 +2249,84 @@ void runImmediateSHOW(std::deque<ForthToken> &tokens) {
         }
     } else {
     }
+}
+
+
+// time word
+
+
+void initializeTimer() {
+    mach_timebase_info_data_t timebase;
+    kern_return_t kr = mach_timebase_info(&timebase);
+    if (kr != KERN_SUCCESS) {
+        std::cerr << "Failed to initialize timer. Error: " << kr << std::endl;
+    }
+    // std::cout << "Timebase info: numer = " << timebase.numer << ", denom = " << timebase.denom << std::endl;
+    // If the values are always 1, this indicates we're natively getting nanoseconds.
+    if (timebase.numer == 1 && timebase.denom == 1) {
+        //std::cout << "mach_absolute_time values are already in nanoseconds." << std::endl;
+    }
+}
+
+
+void displayDuration(uint64_t durationNs) {
+    if (durationNs < 1e6) {
+        // Case 1: Less than 1 millisecond
+        std::cout << durationNs << " ns" << std::endl;
+    } else if (durationNs < 1e9) {
+        // Case 2: Between 1 millisecond and 1 second
+        uint64_t ms = durationNs / 1e6; // Whole milliseconds
+        uint64_t ns = durationNs % static_cast<uint64_t>(1e6); // Remaining nanoseconds
+        std::cout << ms << " ms " << ns << " ns" << std::endl;
+    } else {
+        // Case 3: Greater than or equal to 1 second (with fractional milliseconds)
+        double seconds = durationNs / 1e9; // Convert to seconds as a double
+        std::cout << std::fixed << std::setprecision(3) << seconds << " s" << std::endl;
+    }
+}
+
+void runImmediateTIMEIT(std::deque<ForthToken> &tokens) {
+    if (tokens.empty()) return; // Exit early if no tokens to process
+
+    // Get and remove the first token
+    // The first word is the new action
+    const ForthToken first = tokens.front();
+    if (first.type != TokenType::TOKEN_WORD) {
+        SignalHandler::instance().raise(11); // Invalid token - raise an error
+        return;
+    }
+    tokens.erase(tokens.begin()); // Remove the processed token
+
+    auto &dict = ForthDictionary::instance();
+    auto first_word = dict.findWord(first.value.c_str());
+    if (!first_word) {
+        SignalHandler::instance().raise(14); // Invalid token - raise an error
+        return;
+    }
+    if (first_word->executable == nullptr) {
+        std::cout << "Word not executable" << std::endl;
+        return;
+    }
+    initializeTimer();
+    const uint64_t start_time = mach_absolute_time();
+    // Save the value of RBP
+    asm volatile(
+        "pushq %%rbp" // Push RBP onto the stack
+        :
+        : // No inputs
+        : "memory" // Inform the compiler that memory is being changed
+    );
+    first_word->executable();
+    asm volatile(
+        "popq %%rbp" // Pop the saved RBP value from the stack
+        :
+        : // No inputs
+        : "memory" // Inform the compiler that memory is being changed
+    );
+    uint64_t end = mach_absolute_time();
+    uint64_t durationNs = (end - start_time);
+    std::cout << "Duration: ";
+    displayDuration(durationNs);
 }
 
 
@@ -2023,6 +2356,12 @@ void runImmediateSEE(std::deque<ForthToken> &tokens) {
 
 
 // optimiser fragments
+// optimizer scans tokens and replaces some sequences with more efficient
+// code fragments, which the compiler uses instead of the regular words.
+// fragments live in the fragments dictionary.
+// these functions are run immediately by the compiler to generate code
+// and they have access to the token stream.
+
 
 // add TOS by constant
 void runImmediateADD_IMM(std::deque<ForthToken> &tokens) {
@@ -2040,8 +2379,6 @@ void runImmediateADD_IMM(std::deque<ForthToken> &tokens) {
         SignalHandler::instance().raise(14); // Invalid token - raise an error
         return;
     }
-    // we will run the optimized generator here...
-    //std::cout << "Running optimized generator:" << first_word->getWordName() << std::endl;
 
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
@@ -2076,7 +2413,7 @@ void runImmediateCMP_LT_IMM(std::deque<ForthToken> &tokens) {
     initialize_assembler(assembler);
 
     // Insert a helpful comment
-    assembler->commentf("; Is TOS > %llu", first.int_value);
+    assembler->commentf("; LT is TOS < %llu ?", first.int_value);
 
     // Perform comparison: Compare Top of Stack (TOS, r13) with a literal value
     assembler->cmp(asmjit::x86::r13, asmjit::imm(first.int_value));
@@ -2145,7 +2482,7 @@ void runImmediateCMP_GT_IMM(std::deque<ForthToken> &tokens) {
     initialize_assembler(assembler);
 
     // Insert a helpful comment
-    assembler->commentf("; Is TOS > %llu", first.int_value);
+    assembler->commentf("; Is TOS > %llu ?", first.int_value);
 
     // Perform comparison: Compare TOS (r13) with the literal value
     assembler->cmp(asmjit::x86::r13, asmjit::imm(first.int_value));
@@ -2189,7 +2526,7 @@ void runImmediateCMP_EQ_IMM(std::deque<ForthToken> &tokens) {
     initialize_assembler(assembler);
 
     // Insert a helpful comment
-    assembler->commentf("; Compare TOS (r13) if equal to constant %llu", first.int_value);
+    assembler->commentf("; Is TOS (r13) equal to constant %llu ?", first.int_value);
 
     // Perform comparison: Compare TOS (r13) with the literal value
     assembler->cmp(asmjit::x86::r13, asmjit::imm(first.int_value));
@@ -2230,7 +2567,7 @@ void runImmediateSHL_IMM(std::deque<ForthToken> &tokens) {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     //
-    assembler->commentf("; Sub constant %llu", first.int_value);
+    assembler->commentf("; Shift left (divide) by %llu", first.int_value);
     assembler->shl(asmjit::x86::r13, asmjit::imm(first.int_value));
 }
 
@@ -2388,6 +2725,81 @@ void runImmediateSETCURRENT(std::deque<ForthToken> &tokens) {
     }
 }
 
+//   the following return stack words are often used to manage a pointer to memory
+//   so these optimize that pattern.
+
+//   R> 1 + >R (bump pointer held on return stack)
+void runImmediateINC_R(std::deque<ForthToken> &tokens) {
+
+    const ForthToken first = tokens.front();
+    if (first.type != TokenType::TOKEN_OPTIMIZED) {
+        SignalHandler::instance().raise(11); // Invalid token - raise an error
+        return;
+    }
+    const auto increment  = first.int_value;
+
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+
+    assembler->comment("; -- Add %d to R@", increment);
+    assembler->mov(asmjit::x86::rax, asmjit::x86::ptr(asmjit::x86::r14));
+    assembler->add(asmjit::x86::rax, asmjit::imm(increment));
+    assembler->mov(asmjit::x86::ptr(asmjit::x86::r14), asmjit::x86::rax);
+}
+
+//   R> 1 + >R (bump pointer held on return stack)
+void runImmediateDEC_R(std::deque<ForthToken> &tokens) {
+
+    const ForthToken first = tokens.front();
+    if (first.type != TokenType::TOKEN_OPTIMIZED) {
+        SignalHandler::instance().raise(11); // Invalid token - raise an error
+        return;
+    }
+    const auto increment  = first.int_value;
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+    assembler->commentf("; -- Sub %d from R@", increment);
+    assembler->mov(asmjit::x86::rax, asmjit::x86::ptr(asmjit::x86::r14));
+    assembler->sub(asmjit::x86::rax, asmjit::imm(increment));
+    assembler->mov(asmjit::x86::ptr(asmjit::x86::r14), asmjit::x86::rax);
+}
+
+// poke value from return stack
+void runImmediateRATcStore(std::deque<ForthToken> &tokens) {
+
+    const ForthToken first = tokens.front();
+    if (first.type != TokenType::TOKEN_OPTIMIZED) {
+        SignalHandler::instance().raise(11); // Invalid token - raise an error
+        return;
+    }
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+    assembler->comment("; -- R@ C! ");
+    // we copy the address from the return stack directly saving push/pop
+    assembler->mov(asmjit::x86::rcx, asmjit::x86::ptr(asmjit::x86::r14));
+    assembler->mov(asmjit::x86::byte_ptr(asmjit::x86::rcx), asmjit::x86::r13b);
+    assembler->comment("; -- tidy with DROP ");
+    compile_DROP();
+}
+
+void runImmediateRATStore(std::deque<ForthToken> &tokens) {
+
+    const ForthToken first = tokens.front();
+    if (first.type != TokenType::TOKEN_OPTIMIZED) {
+        SignalHandler::instance().raise(11); // Invalid token - raise an error
+        return;
+    }
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+    assembler->comment("; -- R@ ! ");
+    // we copy the address from the return stack directly saving push/pop
+    assembler->mov(asmjit::x86::rcx, asmjit::x86::ptr(asmjit::x86::r14));
+    assembler->mov(asmjit::x86::byte_ptr(asmjit::x86::rcx), asmjit::x86::r13);
+    assembler->comment("; -- tidy with DROP ");
+    compile_DROP();
+}
+
+
 
 // add immediate interpreter words.
 
@@ -2395,10 +2807,14 @@ void runImmediateSETCURRENT(std::deque<ForthToken> &tokens) {
 void Forget() {
     ForthDictionary &dict = ForthDictionary::instance();
     dict.forgetLastWord();
-
 }
 
+
+
+// words run immediately by the compiler to generate code.
+
 void code_generator_add_immediate_words() {
+
     ForthDictionary &dict = ForthDictionary::instance();
 
 
@@ -2416,6 +2832,50 @@ void code_generator_add_immediate_words() {
                      nullptr,
                      nullptr,
                      runImmediateSETCURRENT);
+
+    dict.addCodeWord("VAR_@", "FRAGMENTS",
+                     ForthState::IMMEDIATE,
+                     ForthWordType::MACRO,
+                     nullptr,
+                     nullptr,
+                     runImmediateVAR_AT);
+
+    dict.addCodeWord("VAR_!", "FRAGMENTS",
+                      ForthState::IMMEDIATE,
+                      ForthWordType::MACRO,
+                      nullptr,
+                      nullptr,
+                      runImmediateVAR_STORE);
+
+
+    dict.addCodeWord("R@_!", "FRAGMENTS",
+                   ForthState::IMMEDIATE,
+                   ForthWordType::MACRO,
+                   nullptr,
+                   nullptr,
+                   runImmediateRATStore);
+
+    dict.addCodeWord("R@_C!", "FRAGMENTS",
+                    ForthState::IMMEDIATE,
+                    ForthWordType::MACRO,
+                    nullptr,
+                    nullptr,
+                    runImmediateRATcStore);
+
+
+    dict.addCodeWord("INC_R@", "FRAGMENTS",
+                 ForthState::IMMEDIATE,
+                 ForthWordType::MACRO,
+                 nullptr,
+                 nullptr,
+                 runImmediateINC_R);
+
+    dict.addCodeWord("DEC_R@", "FRAGMENTS",
+             ForthState::IMMEDIATE,
+             ForthWordType::MACRO,
+             nullptr,
+             nullptr,
+             runImmediateDEC_R);
 
     dict.addCodeWord("LEA_TOS", "FRAGMENTS",
                      ForthState::IMMEDIATE,
@@ -2497,6 +2957,15 @@ void code_generator_add_immediate_words() {
                      nullptr,
                      runImmediateSET);
 
+
+    dict.addCodeWord("TIMEIT", "FORTH",
+                     ForthState::IMMEDIATE,
+                     ForthWordType::WORD,
+                     nullptr,
+                     nullptr,
+                     runImmediateTIMEIT);
+
+
     dict.addCodeWord("SHOW", "FORTH",
                      ForthState::IMMEDIATE,
                      ForthWordType::WORD,
@@ -2540,7 +3009,8 @@ void code_generator_add_immediate_words() {
                      ForthWordType::WORD,
                      nullptr,
                      nullptr,
-                     runImmediateVARIABLE);
+                     runImmediateVARIABLE
+                     );
 
 
     dict.addCodeWord("DEFER", "FORTH",
@@ -2567,16 +3037,16 @@ void spit_str(const char *str) {
 
 
 static void spit_number(const int64_t n) {
-    std::cout << n << ' ';
+    std::cout << std::dec << n << ' ';
 }
 
-static void spit_number_f(double f) {
-    std::cout << f << ' ';
-}
+// static void spit_number_f(double f) {
+//     std::cout << f << ' ';
+// }
 
 
 static void spit_char(const char c) {
-    std::cout << c;
+    putchar(c);
 }
 
 static void spit_end_line() {
@@ -2605,6 +3075,22 @@ static void compile_DOT() {
     assembler->add(asmjit::x86::r15, 8); // Adjust stack pointer
 }
 
+static void compile_CHAR(std::deque<ForthToken> &tokens) {
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+
+    if (tokens.empty()) return; // Exit early if no tokens to process
+    const ForthToken first = tokens.front();
+    tokens.erase(tokens.begin()); // Remove the processed token
+    if (tokens.empty()) return; // Exit early if no tokens to process
+    const ForthToken character = tokens.front();
+    const int c = static_cast<unsigned char>(character.value[0]);
+    // move charValue to rax
+    assembler->commentf("; -- literal char '%c'", c);
+    compile_DUP();
+    assembler->mov(asmjit::x86::r13, asmjit::imm(c));
+}
+
 
 static void compile_DotString(std::deque<ForthToken> &tokens) {
     if (tokens.empty()) return; // Exit early if no tokens to process
@@ -2625,16 +3111,9 @@ static void compile_DotString(std::deque<ForthToken> &tokens) {
         return;
     }
 
-
     // we need to save the string literal
     auto &stringStorage = StringStorage::instance();
     const char *addr1 = stringStorage.intern(second.value);
-
-    // std::cout << std::endl << "string address: " << std::hex
-    // << reinterpret_cast<const void*>(addr1)
-    // << std::dec << std::endl;
-    // std::cout << "string length: " << second.value.length() << std::endl;
-    // std::cout << "string value: " << addr1 << std::endl;
 
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
@@ -2732,7 +3211,24 @@ static void compile_PAGE() {
 
 
 void code_generator_add_io_words() {
+
     ForthDictionary &dict = ForthDictionary::instance();
+
+    dict.addCodeWord("[CHAR]", "FORTH",
+                      ForthState::IMMEDIATE,
+                      ForthWordType::WORD,
+                      nullptr,
+                      nullptr,
+                      runImmediateCHAR,
+                      &compile_CHAR);
+
+    dict.addCodeWord("CHAR", "FORTH",
+                     ForthState::IMMEDIATE,
+                     ForthWordType::WORD,
+                     nullptr,
+                     nullptr,
+                     runImmediateCHAR,
+                     &compile_CHAR);
 
 
     dict.addCodeWord(".\"", "FORTH",
@@ -3569,16 +4065,257 @@ void moveTOSToXMM0() {
 }
 
 
+static void genFetchTwoXMMFromStack(asmjit::x86::Assembler *assembler) {
+    assembler->comment("; fetch two numbers");
+    assembler->movq(asmjit::x86::xmm1, asmjit::x86::r13); // Move the first value to XMM0
+    assembler->movq(asmjit::x86::xmm0, asmjit::x86::r12); // Move the second value to XMM1
+    assembler->comment("; adjust stack");
+    assembler->mov(asmjit::x86::r13, asmjit::x86::ptr(asmjit::x86::r15));
+    assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r15, 8));
+    assembler->add(asmjit::x86::r15, 0x10);
+}
+
+static void genPushXmm0(asmjit::x86::Assembler *assembler) {
+    assembler->comment("; push result");
+    assembler->mov(asmjit::x86::ptr(asmjit::x86::r15), asmjit::x86::r12);
+    // Move the result back to a general-purpose register
+    assembler->mov(asmjit::x86::r12, asmjit::x86::r13); // Move the result back to a general-purpose register
+    assembler->movq(asmjit::x86::r13, asmjit::x86::xmm0); // Move the result back to a general-purpose register
+}
+
+// // External constants must be defined somewhere:
+// alignas(16) const double const_ten = 10.0; // 10.0
+// alignas(16) extern const double const_neg_one = -1.0; // -1.0
+//
+// // Generates a function equivalent to:
+// // void float_to_string(double value, char *buffer, int precision)
+// static void genFloatToString(asmjit::x86::Assembler *a) {
+//     using namespace asmjit;
+//
+//     // --- Ensure precision >= 0 ---
+//     a->cmp(x86::esi, 0);
+//     Label precisionOk = a->newLabel();
+//     a->jge(precisionOk);
+//     a->mov(x86::esi, 0);
+//     a->bind(precisionOk);
+//
+//     // --- ptr = buffer (store in r8) ---
+//     a->mov(x86::r8, x86::rdi);
+//
+//     // --- Handle the sign ---
+//     // if (value < 0) { *ptr++ = '-'; value = -value; }
+//     a->xorps(x86::xmm1, x86::xmm1); // xmm1 = 0.0
+//     a->ucomisd(x86::xmm0, x86::xmm1); // compare value (xmm0) with 0.0
+//     Label valuePositive = a->newLabel();
+//     a->jae(valuePositive);
+//     a->mov(x86::byte_ptr(x86::r8), imm('-')); // *ptr = '-'
+//     a->inc(x86::r8); // ptr++
+//     a->movsd(asmjit::x86::xmm2, asmjit::x86::ptr(reinterpret_cast<uint64_t>(&const_neg_one))); // load -1.0
+//     a->mulsd(x86::xmm0, x86::xmm2); // value = value * (-1.0)
+//     a->bind(valuePositive);
+//
+//     // --- Compute integer and fractional parts ---
+//     // int_part = (uint64_t)value
+//     a->cvttsd2si(x86::rax, x86::xmm0); // rax = integer part
+//     // frac_part = value - (double)int_part
+//     a->cvtsi2sd(x86::xmm2, x86::rax); // xmm2 = (double) int_part
+//     a->subsd(x86::xmm0, x86::xmm2); // xmm0 now holds frac_part
+//     // Save integer part into r9 for conversion.
+//     a->mov(x86::r9, x86::rax);
+//
+//     // --- Convert integer part to string (digits are generated in reverse order) ---
+//     // Save the starting pointer of the integer part in r10.
+//     a->mov(x86::r10, x86::r8); // int_start = r8
+//
+//     // Loop: do { remainder = int_part % 10; store digit; int_part /= 10; } while (int_part != 0)
+//     Label intLoop = a->newLabel();
+//     Label intLoopEnd = a->newLabel();
+//     a->bind(intLoop);
+//     // Move current int_part from r9 into rax.
+//     a->mov(x86::rax, x86::r9);
+//     a->xor_(x86::rdx, x86::rdx); // clear rdx (required for div)
+//     a->mov(x86::rcx, 10); // divisor = 10
+//     a->div(x86::rcx); // quotient in rax, remainder in rdx
+//     a->add(x86::dl, imm('0')); // convert remainder to ASCII digit
+//     a->mov(x86::byte_ptr(x86::r8), x86::dl); // *ptr = digit
+//     a->inc(x86::r8); // ptr++
+//     a->mov(x86::r9, x86::rax); // update int_part with quotient
+//     a->test(x86::r9, x86::r9);
+//     a->jnz(intLoop);
+//     a->bind(intLoopEnd);
+//
+//     // --- Reverse the integer digits in-place ---
+//     // r10 holds the start of the integer digits; r8 now points past the last digit.
+//     // Set r11 = r8 - 1 (end pointer)
+//     a->mov(x86::r11, x86::r8);
+//     a->dec(x86::r11);
+//     Label reverseLoop = a->newLabel();
+//     Label reverseDone = a->newLabel();
+//     a->bind(reverseLoop);
+//     a->cmp(x86::r10, x86::r11);
+//     a->jge(reverseDone);
+//     a->mov(x86::al, x86::byte_ptr(x86::r10)); // al = *int_start
+//     a->mov(x86::bl, x86::byte_ptr(x86::r11)); // bl = *int_end
+//     a->mov(x86::byte_ptr(x86::r10), x86::bl); // *int_start = bl
+//     a->mov(x86::byte_ptr(x86::r11), x86::al); // *int_end = al
+//     a->inc(x86::r10); // move int_start forward
+//     a->dec(x86::r11); // move int_end backward
+//     a->jmp(reverseLoop);
+//     a->bind(reverseDone);
+//
+//     // --- Process fractional part if (precision > 0) ---
+//     Label noFraction = a->newLabel();
+//     a->cmp(x86::esi, 0);
+//     a->jle(noFraction);
+//     // Write decimal point:
+//     a->mov(x86::byte_ptr(x86::r8), imm('.'));
+//     a->inc(x86::r8);
+//     // Save the start of the fractional part in r12.
+//     a->mov(x86::r12, x86::r8);
+//     // Use rbx for a loop counter; initialize with precision (from esi).
+//     a->mov(x86::ebx, x86::esi);
+//     Label fracLoop = a->newLabel();
+//     Label fracLoopEnd = a->newLabel();
+//     a->bind(fracLoop);
+//     a->cmp(x86::ebx, 0);
+//     a->je(fracLoopEnd);
+//     // Multiply frac_part (in xmm0) by 10.
+//     a->movsd(asmjit::x86::xmm2, asmjit::x86::ptr(reinterpret_cast<uint64_t>(&const_ten))); // load 10.0
+//     a->mulsd(x86::xmm0, x86::xmm3);
+//     // Get the next digit: digit = (int)frac_part.
+//     a->cvttsd2si(x86::rax, x86::xmm0);
+//     // Subtract the digit (converted back to double) from frac_part.
+//     a->cvtsi2sd(x86::xmm4, x86::rax);
+//     a->subsd(x86::xmm0, x86::xmm4);
+//     // Convert the digit to its ASCII value.
+//     a->add(x86::al, imm('0'));
+//     a->mov(x86::byte_ptr(x86::r8), x86::al);
+//     a->inc(x86::r8);
+//     a->dec(x86::ebx);
+//     a->jmp(fracLoop);
+//     a->bind(fracLoopEnd);
+//
+//     // --- Trim trailing zeros from the fractional part ---
+//     Label trimLoop = a->newLabel();
+//     Label trimDone = a->newLabel();
+//     a->bind(trimLoop);
+//     a->cmp(x86::r8, x86::r12);
+//     a->jle(trimDone);
+//     a->mov(x86::al, x86::byte_ptr(x86::r8, -1));
+//     a->cmp(x86::al, imm('0'));
+//     a->jne(trimDone);
+//     a->dec(x86::r8);
+//     a->jmp(trimLoop);
+//     a->bind(trimDone);
+//     // If the last character is a '.', remove it.
+//     a->mov(x86::al, x86::byte_ptr(x86::r8, -1));
+//     Label noDot = a->newLabel();
+//     a->cmp(x86::al, imm('.'));
+//     a->jne(noDot);
+//     a->dec(x86::r8);
+//     a->bind(noDot);
+//     a->bind(noFraction);
+//
+//     // --- Null-terminate the string ---
+//     a->mov(x86::byte_ptr(x86::r8), imm(0));
+//     a->ret();
+// }
+
+
+void float_to_string(double value, char *buffer, int precision) {
+    // Ensure precision is non-negative
+    if (precision < 0) {
+        precision = 0;
+    }
+
+    char *ptr = buffer; // Pointer for traversing the buffer
+    uint64_t int_part = (uint64_t) value; // Integer part of the number
+    double frac_part = value - int_part; // Fractional part of the number
+
+    // Handle the sign
+    if (value < 0) {
+        *ptr++ = '-';
+        value = -value;
+        int_part = (uint64_t) value;
+        frac_part = value - int_part;
+    }
+
+    // Convert integer part and store directly to the main buffer
+    char *int_start = ptr; // Remember where the integer part starts
+    do {
+        *ptr++ = '0' + (int_part % 10); // Extract least significant digit
+        int_part /= 10; // Remove the digit
+    } while (int_part > 0);
+
+    // Reverse the integer part in-place
+    char *int_end = ptr - 1; // End of the integer digits
+    while (int_start < int_end) {
+        char temp = *int_start;
+        *int_start++ = *int_end;
+        *int_end-- = temp;
+    }
+
+    // Process fractional part if precision > 0
+    if (precision > 0) {
+        *ptr++ = '.'; // Add decimal point
+
+        // Process fractional digits
+        char *frac_start = ptr; // Start of fractional part
+        for (int i = 0; i < precision; i++) {
+            frac_part *= 10; // Shift the fractional part
+            int digit = (int) frac_part; // Get the next digit
+            *ptr++ = '0' + digit; // Append the digit
+            frac_part -= digit; // Remove the digit from the fractional part
+        }
+
+        // Trim trailing zeros while writing the fractional part
+        while (ptr > frac_start && *(ptr - 1) == '0') {
+            ptr--;
+        }
+
+        // Remove the decimal point if no fractional digits remain
+        if (ptr > buffer && *(ptr - 1) == '.') {
+            ptr--;
+        }
+    }
+
+    // Null-terminate the string
+    *ptr = '\0';
+}
+
+
 static void genFDot() {
+    char num_pad[32];
+    double f = cfpop();
+    float_to_string(f, num_pad, 2);
+    std::cout << num_pad;
+}
+
+
+static void compile_DIGIT() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
-    assembler->comment(" ; -- FDot");
-    asmjit::x86::Gp tmpReg = asmjit::x86::rcx;
-    popDS(tmpReg);
-    assembler->movq(asmjit::x86::xmm0, tmpReg);
-    assembler->push(asmjit::x86::rdi);
-    assembler->call(asmjit::imm(reinterpret_cast<void *>(spit_number_f)));
-    assembler->pop(asmjit::x86::rdi);
+
+    // Create labels for branching
+    labels.createLabel(*assembler, "digit_is_number");
+    labels.createLabel(*assembler, "digit_end");
+
+    assembler->comment("; -- DIGIT");
+
+    // Compare R13 against 10 to decide if it's in the range 0-9 or 10-35
+    assembler->cmp(asmjit::x86::r13, 10); // Compare TOS (R13) with 10
+    labels.jb(*assembler, "digit_is_number"); // If R13 < 10, jump to digit_is_number
+
+    // Handle letters (R13 >= 10): convert to 'A'-based ASCII
+    assembler->add(asmjit::x86::r13, ('A' - 10)); // R13 = R13 + ('A' - 10)
+    labels.jmp(*assembler, "digit_end"); // Skip the number handling
+
+    // Handle numbers (R13 < 10): convert to '0'-based ASCII
+    labels.bindLabel(*assembler, "digit_is_number");
+    assembler->add(asmjit::x86::r13, '0'); // R13 = R13 + '0'
+
+    // Label for the end of the calculation
+    labels.bindLabel(*assembler, "digit_end");
 }
 
 void compile_pushLiteralFloat(const double literal) {
@@ -3602,67 +4339,39 @@ void compile_pushLiteralFloat(const double literal) {
 static void genFPlus() {
     asmjit::x86::Assembler *assembler;
     if (initialize_assembler(assembler)) return;
-    asmjit::x86::Gp firstVal = asmjit::x86::rax;
-    asmjit::x86::Gp secondVal = asmjit::x86::rbx;
-
     assembler->comment(" ; Add two floating point values from the stack");
-    popDS(firstVal); // Pop the first floating point value
-    popDS(secondVal); // Pop the second floating point value
-    assembler->movq(asmjit::x86::xmm0, firstVal); // Move the first value to XMM0
-    assembler->movq(asmjit::x86::xmm1, secondVal); // Move the second value to XMM1
+    genFetchTwoXMMFromStack(assembler);
     assembler->addsd(asmjit::x86::xmm0, asmjit::x86::xmm1); // Add the two floating point values
-    assembler->movq(firstVal, asmjit::x86::xmm0); // Move the result back to a general-purpose register
-    pushDS(firstVal); // Push the result back onto the stack
+    genPushXmm0(assembler);
 }
 
 static void genFSub() {
     asmjit::x86::Assembler *assembler;
     if (initialize_assembler(assembler)) return;
-    asmjit::x86::Gp firstVal = asmjit::x86::rax;
-    asmjit::x86::Gp secondVal = asmjit::x86::rbx;
-
-
+    genFetchTwoXMMFromStack(assembler);
     assembler->comment(" ; floating point subtraction");
-    popDS(firstVal); // Pop the first floating point value
-    popDS(secondVal); // Pop the second floating point value
-    assembler->movq(asmjit::x86::xmm0, secondVal);
-    assembler->movq(asmjit::x86::xmm1, firstVal);
     assembler->subsd(asmjit::x86::xmm0, asmjit::x86::xmm1); // Subtract the floating point values
-    assembler->movq(firstVal, asmjit::x86::xmm0); // Move the result back to a general-purpose register
-    pushDS(firstVal); // Push the result back onto the stack
+    genPushXmm0(assembler);
 }
 
 
 static void genFMul() {
     asmjit::x86::Assembler *assembler;
     if (initialize_assembler(assembler)) return;
-    asmjit::x86::Gp firstVal = asmjit::x86::rax;
-    asmjit::x86::Gp secondVal = asmjit::x86::rbx;
-
-    assembler->comment(" ; Multiply two floating point values from the stack");
-    popDS(firstVal); // Pop the first floating point value
-    popDS(secondVal); // Pop the second floating point value
-    assembler->movq(asmjit::x86::xmm0, firstVal); // Move the first value to XMM0
-    assembler->movq(asmjit::x86::xmm1, secondVal); // Move the second value to XMM1
-    assembler->mulsd(asmjit::x86::xmm0, asmjit::x86::xmm1); // Multiply the floating point values
-    assembler->movq(firstVal, asmjit::x86::xmm0); // Move the result back to a general-purpose register
-    pushDS(firstVal); // Push the result back onto the stack
+    assembler->comment(" ; Multiply");
+    genFetchTwoXMMFromStack(assembler);
+    assembler->mulsd(asmjit::x86::xmm0, asmjit::x86::xmm1); // Multiply the two floating point values
+    assembler->sub(asmjit::x86::r15, 8);
+    genPushXmm0(assembler);
 }
 
 static void genFDiv() {
     asmjit::x86::Assembler *assembler;
     if (initialize_assembler(assembler)) return;
-    asmjit::x86::Gp firstVal = asmjit::x86::rax;
-    asmjit::x86::Gp secondVal = asmjit::x86::rbx;
-
-    assembler->comment(" ; Divide two floating point values from the stack");
-    popDS(firstVal); // Pop the first floating point value
-    popDS(secondVal); // Pop the second floating point value
-    assembler->movq(asmjit::x86::xmm0, secondVal);
-    assembler->movq(asmjit::x86::xmm1, firstVal);
+    assembler->comment(" ; Divide ");
+    genFetchTwoXMMFromStack(assembler);
     assembler->divsd(asmjit::x86::xmm0, asmjit::x86::xmm1); // Divide the floating point values
-    assembler->movq(firstVal, asmjit::x86::xmm0); // Move the result back to a general-purpose register
-    pushDS(firstVal); // Push the result back onto the stack
+    genPushXmm0(assembler);
 }
 
 
@@ -3692,35 +4401,19 @@ static void genFMod() {
 static void genFMax() {
     asmjit::x86::Assembler *assembler;
     if (initialize_assembler(assembler)) return;
-    asmjit::x86::Gp firstVal = asmjit::x86::rax;
-    asmjit::x86::Gp secondVal = asmjit::x86::rbx;
-
-
     assembler->comment(" ; Find the maximum of two floating point values from the stack");
-    popDS(firstVal); // Pop the first floating point value
-    popDS(secondVal); // Pop the second floating point value
-    assembler->movq(asmjit::x86::xmm0, firstVal); // Move the first value to XMM0
-    assembler->movq(asmjit::x86::xmm1, secondVal); // Move the second value to XMM1
+    genFetchTwoXMMFromStack(assembler);
     assembler->maxsd(asmjit::x86::xmm0, asmjit::x86::xmm1); // Compute the maximum of the two values
-    assembler->movq(firstVal, asmjit::x86::xmm0); // Move the result back to a general-purpose register
-    pushDS(firstVal); // Push the result back onto the stack
+    genPushXmm0(assembler);
 }
 
 static void genFMin() {
     asmjit::x86::Assembler *assembler;
     if (initialize_assembler(assembler)) return;
-    asmjit::x86::Gp firstVal = asmjit::x86::rax;
-    asmjit::x86::Gp secondVal = asmjit::x86::rbx;
-
-
     assembler->comment(" ; Find the minimum of two floating point values from the stack");
-    popDS(firstVal); // Pop the first floating point value
-    popDS(secondVal); // Pop the second floating point value
-    assembler->movq(asmjit::x86::xmm0, firstVal); // Move the first value to XMM0
-    assembler->movq(asmjit::x86::xmm1, secondVal); // Move the second value to XMM1
-    assembler->minsd(asmjit::x86::xmm0, asmjit::x86::xmm1); // Compute the minimum of the two values
-    assembler->movq(firstVal, asmjit::x86::xmm0); // Move the result back to a general-purpose register
-    pushDS(firstVal); // Push the result back onto the stack
+    genFetchTwoXMMFromStack(assembler);
+    assembler->minsd(asmjit::x86::xmm0, asmjit::x86::xmm1); // Compute the maximum of the two values
+    genPushXmm0(assembler);
 }
 
 
@@ -3911,6 +4604,13 @@ void code_generator_add_float_words() {
     ForthDictionary &dict = ForthDictionary::instance();
 
 
+    dict.addCodeWord("DIGIT", "FORTH",
+                     ForthState::EXECUTABLE,
+                     ForthWordType::WORD,
+                     static_cast<ForthFunction>(&compile_DIGIT),
+                     code_generator_build_forth(compile_DIGIT),
+                     nullptr);
+
     dict.addCodeWord("f=", "FORTH",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
@@ -4070,8 +4770,8 @@ void code_generator_add_float_words() {
     dict.addCodeWord("f.", "FORTH",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
-                     static_cast<ForthFunction>(&genFDot),
-                     code_generator_build_forth(genFDot),
+                     nullptr,
+                     genFDot,
                      nullptr
     );
 

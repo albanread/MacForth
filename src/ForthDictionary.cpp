@@ -1,7 +1,10 @@
 #include "ForthDictionary.h"
 #include <cstring>
 #include <iostream>
+#include <JitContext.h>
 #include <unordered_set>
+#include <asmjit/core/jitruntime.h>
+
 #include "Quit.h"
 #include "SymbolTable.h"
 #include "Tokenizer.h"
@@ -84,7 +87,6 @@ ForthDictionaryEntry *ForthDictionary::addCodeWord(
     dictionaryLists[length] = newWord;
     latestWordAdded = newWord; // Update the latest word
     latestWordName = wordName; // Update the latest word name
-    wordOrder.push_back(newWord); // Track addition order
     wordOrder.push_back(newWord); // Track addition order
     return newWord; // Return the newly added entry
 }
@@ -182,6 +184,49 @@ ForthDictionaryEntry *ForthDictionary::findWord(const char *name) const {
 
     return nullptr; // Word not found
 }
+
+
+bool ForthDictionary::isVariable(const char *name) const {
+    if (!name) {
+        throw std::invalid_argument("Name cannot be null!");
+    }
+
+    // uppercase the name
+    std::string nameStr(name);
+    std::transform(nameStr.begin(), nameStr.end(), nameStr.begin(), ::toupper);
+    name = nameStr.c_str();
+
+    size_t length = std::strlen(name);
+    if (length >= MAX_WORD_LENGTH) {
+        return false; // Word is too long, invalid
+    }
+
+    auto word_id = SymbolTable::instance().findSymbol(name);
+    if (word_id == 0) return false;
+
+    // Create a set of vocab IDs prioritized by search order
+    std::unordered_set<size_t> vocabSet;
+    for (const auto &vocab : searchOrder) {
+        if (vocab != nullptr) {
+            vocabSet.insert(vocab->vocab_id);
+        }
+    }
+
+    // Iterate over words of the same length
+    ForthDictionaryEntry *current = dictionaryLists[length];
+    while (current) {
+        // Check both word ID and vocab ID
+        if (current->word_id == word_id && vocabSet.count(current->vocab_id) > 0) {
+            return (current->type == ForthWordType::VARIABLE);
+        }
+        current = current->previous;
+    }
+
+    return false; // Word not found
+}
+
+
+
 
 // this executes 'simple' executable names.
 void ForthDictionary::execWord(const char *name) {
@@ -488,66 +533,78 @@ void ForthDictionary::addToCache(const std::string &name, ForthDictionaryEntry *
     wordCache.push_back({name, entry});
 }
 
-
 void ForthDictionary::forgetLastWord() {
     if (wordOrder.empty()) {
-        // If there are no words in the dictionary, nothing to forget
         std::cerr << "Error: No word to forget.\n";
         return;
     }
 
     // The word to forget is the most recently added one
     ForthDictionaryEntry* wordToForget = wordOrder.back();
-    wordOrder.pop_back(); // Remove it from the tracking list
+    wordOrder.pop_back();
 
     std::cout << "Forgetting word: " << latestWordName << "\n";
 
-    // Get the word length to locate the correct dictionary list
-    size_t length = latestWordName.size();
+    const size_t length = latestWordName.size();
+
+    if (wordToForget->executable) { // free asmjit memory
+        if (const auto runtime =  &JitContext::instance()._rt) {
+            runtime->release(wordToForget->executable);
+            wordToForget->executable = nullptr;
+            runtime->release(wordToForget->immediate_interpreter);
+            wordToForget->immediate_interpreter = nullptr;
+            runtime->release(wordToForget->generator);
+            wordToForget->generator = nullptr;
+            runtime->release(wordToForget->immediate_compiler);
+            wordToForget->immediate_compiler = nullptr;
+        }
+    }
 
 
-    // Free any associated memory from the WordHeap
+    // Free any associated memory from WordHeap
     WordHeap::instance().deallocate(wordToForget->word_id);
 
     // Update dictionaryLists to remove the entry
-    if (dictionaryLists[length] == wordToForget) {
-        // If the word being forgotten is the head of the list, update the head
-        dictionaryLists[length] = wordToForget->previous;
-    } else {
-        // Otherwise, find the word in the list and update the chain
-        ForthDictionaryEntry* current = dictionaryLists[length];
-        while (current && current->previous != wordToForget) {
+    auto removeFromChain = [](ForthDictionaryEntry*& head, ForthDictionaryEntry* entry) {
+        if (head == entry) {
+            head = entry->previous;
+            return true;
+        }
+        ForthDictionaryEntry* current = head;
+        while (current && current->previous != entry) {
             current = current->previous;
         }
-
         if (current) {
-            // Relink the chain to skip over the word to forget
-            current->previous = wordToForget->previous;
-        } else {
-            std::cerr << "Error: Word not found in dictionary lists.\n";
+            current->previous = entry->previous;
+            return true;
         }
+        return false;
+    };
+
+    if (!removeFromChain(dictionaryLists[length], wordToForget)) {
+        std::cerr << "Error: Word not found in dictionary lists.\n";
     }
 
-    // Update the latest word if possible
+    // Forget the word's name from the SymbolTable
+    SymbolTable::instance().forgetSymbol(latestWordName);
+
+    // Update the latest word
     if (!wordOrder.empty()) {
-        latestWordAdded = wordOrder.back(); // The new latest word
+        latestWordAdded = wordOrder.back();
         latestWordName = SymbolTable::instance().getSymbol(latestWordAdded->word_id);
     } else {
-        latestWordAdded = nullptr; // No more words
+        latestWordAdded = nullptr;
         latestWordName.clear();
     }
 
-    // Remove the word from unusedVocabularyStorage, if applicable
-    auto it = std::find_if(
-        unusedVocabularyStorage.begin(),
-        unusedVocabularyStorage.end(),
-        [wordToForget](const std::unique_ptr<ForthDictionaryEntry>& entry) {
-            return entry.get() == wordToForget;
-        });
-
-    if (it != unusedVocabularyStorage.end()) {
-        unusedVocabularyStorage.erase(it);
-    }
+    // Remove from unusedVocabularyStorage
+    unusedVocabularyStorage.erase(
+        std::remove_if(unusedVocabularyStorage.begin(),
+                       unusedVocabularyStorage.end(),
+                       [wordToForget](const std::unique_ptr<ForthDictionaryEntry>& entry) {
+                           return entry.get() == wordToForget;
+                       }),
+        unusedVocabularyStorage.end());
 
     // Finally, delete the word itself
     delete wordToForget;

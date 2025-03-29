@@ -36,7 +36,7 @@ void Interpreter::handle_word(std::deque<ForthToken> &tokens) {
     const ForthToken &first = tokens.front();
     tokens.pop_front(); // Efficiently remove the first token
 
-    if (first.type == TokenType::TOKEN_WORD) {
+    if (first.type == TokenType::TOKEN_WORD || first.type == TokenType::TOKEN_VARIABLE) {
         auto word_found = dict.findWordByToken(first);
         if (word_found == nullptr) {
             raise_error(5, "Word not found: " + first.value);
@@ -59,13 +59,13 @@ void Interpreter::handle_compiling(std::deque<ForthToken> &tokens) {
 // Helper: Handle TOKEN_NUMBER
 void Interpreter::handle_number(const ForthToken &first, std::deque<ForthToken> &tokens) {
     cpush(first.int_value); // Push the integer to the stack
-    tokens.pop_front();     // Remove the processed token
+    tokens.pop_front(); // Remove the processed token
 }
 
 // Helper: Handle TOKEN_FLOAT
 void Interpreter::handle_float(const ForthToken &first, std::deque<ForthToken> &tokens) {
     cfpush(first.float_value); // Push the float to the stack
-    tokens.pop_front();        // Remove the processed token
+    tokens.pop_front(); // Remove the processed token
 }
 
 // Helper: Handle unknown or unprocessed tokens
@@ -75,7 +75,6 @@ void Interpreter::handle_unknown(const ForthToken &first) {
 
 // Main entry point for interpreting Forth code
 void Interpreter::execute(const std::string &input) {
-
     // Check if the input contains "LET"
     if (input.find("LET") != std::string::npos) {
         Compiler::instance().compile_let(input);
@@ -89,7 +88,6 @@ void Interpreter::execute(const std::string &input) {
     Tokenizer::instance().tokenize_forth(input, tokens);
 
     while (!tokens.empty()) {
-
         ForthToken &first = tokens.front();
 
         // Use a switch structure for token processing
@@ -99,6 +97,7 @@ void Interpreter::execute(const std::string &input) {
                 break;
 
             case TokenType::TOKEN_WORD:
+            case TokenType::TOKEN_VARIABLE:
                 handle_word(tokens);
                 break;
 

@@ -25,6 +25,29 @@ public:
         return id;
     }
 
+    uint32_t findSymbol(const std::string& name) {
+        auto it = symbols.find(name);
+        if (it != symbols.end()) {
+            return it->second;
+        }
+        return 0;
+    }
+
+    // Removes a symbol if it exists
+    bool forgetSymbol(const std::string& name) {
+        auto it = symbols.find(name);
+        if (it != symbols.end()) {
+            uint32_t id = it->second;
+
+            // Remove from both maps
+            symbols.erase(it);
+            reverse_lookup.erase(id);
+            return true;
+        }
+        return false; // Symbol wasn't found
+    }
+
+
     uint32_t definedSymbol(const std::string& name) {
         auto it = symbols.find(name);
         if (it != symbols.end()) {

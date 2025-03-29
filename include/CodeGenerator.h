@@ -4,12 +4,13 @@
 #include "FlowLabels.h"
 
 
-
-
 [[maybe_unused]] static void pushDS(const asmjit::x86::Gp& reg);
 [[maybe_unused]] static void popDS(const asmjit::x86::Gp& reg);
 [[maybe_unused]] static void pushRS(const asmjit::x86::Gp& reg);
 [[maybe_unused]] static void popRS(const asmjit::x86::Gp& reg);
+
+void pinToCore(int coreId);
+void unpinThread();
 
 bool initialize_assembler(asmjit::x86::Assembler *&assembler);
 
@@ -29,6 +30,8 @@ void compile_pushLiteral(const int64_t literal);
 
 void compile_pushLiteralFloat(const double literal);
 
+void compile_pushVariableAddress(const int64_t literal, const std::string &name);
+
 void compile_call_C(void (*func)());
 
 void compile_call_forth(void (*func)(), const std::string &forth_word);
@@ -39,7 +42,7 @@ void stack_self();
 
 void code_generator_puts_no_crlf(const char *str);
 
-
+void code_generator_add_variables();
 
 void code_generator_add_immediate_words();
 

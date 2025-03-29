@@ -16,6 +16,7 @@ typedef enum {
     TOKEN_NUMBER,       // Integer numbers
     TOKEN_FLOAT,        // Floating-point numbers
     TOKEN_STRING,       // Strings
+    TOKEN_VARIABLE,     // Variable with data pointer
     TOKEN_UNKNOWN,      // Unidentified tokens
     TOKEN_COMPILING,    // Indicate the compiler is running
     TOKEN_BEGINCOMMENT, // Start of comment

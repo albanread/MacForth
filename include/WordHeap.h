@@ -19,7 +19,6 @@ enum class WordDataType {
     FLOAT, // Single float
     FLOAT_ARRAY, // Array of floats
     STRING // Null-terminated string
-    // Add more types as needed
 };
 
 // Represents a word's allocated memory and type metadata
@@ -30,6 +29,7 @@ public:
     struct WordAllocation {
         void *dataPtr; // Pointer to allocated data
         size_t size; // Size of the allocation in bytes
+        size_t index; // index for array
         WordDataType dataType; // Type of data (default: raw bytes)
     };
 
@@ -74,7 +74,7 @@ public:
             std::free(tempData);
 
             // Update allocation metadata
-            it->second = {newPtr, size, type}; // Update size and type
+            it->second = {newPtr, size, 0, type}; // Update size and type
             std::cout << "WordHeap: Reallocation succeeded for word ID: " << std::hex << wordId
                     << " Name: " << SymbolTable::instance().getSymbol(wordId)
                     << std::dec << ", new size: " << size << " bytes." << std::endl;
@@ -92,7 +92,7 @@ public:
         }
 
         // Store the allocation along with type metadata
-        allocations[wordId] = {ptr, size, type};
+        allocations[wordId] = {ptr, size, 0, type};
 
         std::cout << "WordHeap: Successfully allocated "
                 << size << " bytes for word ID: "

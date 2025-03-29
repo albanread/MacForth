@@ -26,10 +26,10 @@ private:
     std::string extract_word_name(std::deque<ForthToken> &tokens);
 
     // Token processing
-    void process_token(const ForthToken &token, std::deque<ForthToken> &tokens, const std::string &word_name);
+    void process_token(const ForthToken &token, std::deque<ForthToken> &tokens, std::string &word_name);
     void compile_token_number(const ForthToken &token);
     void compile_token_float(const ForthToken &token);
-    void compile_token_word(const ForthToken &token, std::deque<ForthToken> &tokens, const std::string &word_name);
+    void compile_token_word(const ForthToken &token, std::deque<ForthToken> &tokens, std::string &word_name);
     void compile_token_optimized(const ForthToken &token, std::deque<ForthToken> &tokens);
 };
 

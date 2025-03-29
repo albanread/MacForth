@@ -84,6 +84,16 @@ public:
         assembler.jz(it->second);
     }
 
+
+    void jb(asmjit::x86::Assembler &assembler, const std::string &name) const {
+        auto it = _labels.find(name);
+        if (it == _labels.end()) {
+            std::cerr << "LabelManager: Attempting to jump to unknown label: " << name;
+            SignalHandler::instance().raise(21);
+        }
+        assembler.jb(it->second);
+    }
+
     void jnz(asmjit::x86::Assembler &assembler, const std::string &name) const {
         auto it = _labels.find(name);
         if (it == _labels.end()) {

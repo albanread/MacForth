@@ -22,7 +22,7 @@ public:
                                      size_t index);
 
     bool optimize_peephole_case(const std::deque<ForthToken> &tokens, std::deque<ForthToken> &optimized_tokens,
-                                size_t index);
+                                size_t &index);
 
     bool is_power_of_two(int64_t value);
 

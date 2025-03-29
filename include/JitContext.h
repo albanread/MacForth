@@ -8,6 +8,7 @@
 #include "SignalHandler.h"
 
 typedef void (*ForthFunction)();
+
 typedef long (*ForthFunctionInt)(long);
 
 
@@ -77,6 +78,20 @@ public:
         }
     }
 
+
+    void displayAsmJitMemoryUsage() const {
+        auto toMB = [](size_t bytes) { return bytes / 1024.0 / 1024.0; };
+
+        std::cout << "AsmJit Memory Usage Metrics:" << std::endl;
+        std::cout << "    Used:       " << toMB(_rt.allocator()->statistics().usedSize()) << " MB" << std::endl;
+        std::cout << "    Reserved:   " << toMB(_rt.allocator()->statistics().reservedSize()) << " MB" << std::endl;
+        std::cout << "    Overhead:   " << toMB(_rt.allocator()->statistics().overheadSize()) << " MB" << std::endl;
+        std::cout << "    Allocation Count: " << _rt.allocator()->statistics().allocationCount() << " allocations" <<
+                std::endl;
+    }
+
+
+
     void initialize() {
         std::lock_guard<std::mutex> lock(init_mutex);
         delete _assembler;
@@ -87,6 +102,7 @@ public:
             SignalHandler::instance().raise(20);
         }
         _assembler = new asmjit::x86::Assembler(&_code);
+
     }
 
     ForthFunction finalize() {
@@ -106,6 +122,7 @@ private:
     }
 
 public:
+
     asmjit::FileLogger _logger; // Logs assembly output
     asmjit::JitRuntime _rt; // JIT runtime for executable memory
     asmjit::CodeHolder _code; // Holds JIT-generated code

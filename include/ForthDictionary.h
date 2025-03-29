@@ -52,6 +52,8 @@ public:
     // Find a word in the dictionary using the search order
     ForthDictionaryEntry* findWord(const char* name) const;
 
+    bool isVariable(const char *name) const;
+
     void execWord(const char *name);
 
     ForthDictionaryEntry *findWordByToken(const ForthToken &word) const;

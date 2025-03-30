@@ -9,7 +9,6 @@
 #include <cassert>
 #include <deque>
 #include <ForthDictionary.h>
-
 #include "SymbolTable.h"
 
 bool is_number(const std::string &s) {

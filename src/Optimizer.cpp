@@ -6,6 +6,7 @@
 #include <string>
 #include <Tokenizer.h>
 #include "SymbolTable.h"
+#include "Settings.h"
 
 int optimizations;
 
@@ -40,8 +41,6 @@ int Optimizer::optimize(const std::deque<ForthToken> &tokens,
             }
         }
 
-
-
         // Copy token if no optimizations were applied
         optimized_tokens.push_back(current);
     }
@@ -49,7 +48,8 @@ int Optimizer::optimize(const std::deque<ForthToken> &tokens,
     // Add TOKEN_END to signal end of optimization
     optimized_tokens.emplace_back(ForthToken{TOKEN_END});
     //Tokenizer::instance().print_token_list(optimized_tokens);
-    std::cout << "Optimizations: " << optimizations << std::endl;
+    if (jitLogging)
+     std::cout << "Optimizations: " << std::dec << optimizations << std::endl;
     return optimized_tokens.size();
 }
 
@@ -141,102 +141,126 @@ bool Optimizer::optimize_literal_comparison(const std::deque<ForthToken> &tokens
     return true;
 }
 
-bool Optimizer::optimize_peephole_case(const std::deque<ForthToken> &tokens,
-                                       std::deque<ForthToken> &optimized_tokens, size_t &index) {
-    const ForthToken &current = tokens[index];
-    const ForthToken &next = (index + 1 < tokens.size()) ? tokens[index + 1] : ForthToken{};
-    const ForthToken &third = (index + 2 < tokens.size()) ? tokens[index + 2] : ForthToken{};
-    const ForthToken &fourth = (index + 3 < tokens.size()) ? tokens[index + 3] : ForthToken{};
 
-    //   R> n + >R (inc pointer on return stack)
+
+
+ForthToken Optimizer::getToken(const std::deque<ForthToken>& tokens, size_t i) {
+    return (i < tokens.size()) ? tokens[i] : ForthToken();
+}
+
+bool Optimizer::optimize_peephole_case(const std::deque<ForthToken>& tokens,
+                                       std::deque<ForthToken>& optimized_tokens, size_t& index) {
+
+
+    // Lambda to create optimized tokens with less boilerplate
+    auto addOptimizedToken = [&](const std::string& optimized_name, int int_value = 0, const std::string& value = "", int word_id = 0) {
+        auto token = create_optimized_token(optimized_name);
+        token.int_value = int_value;
+        token.value = value;
+        token.word_id = word_id;
+        optimized_tokens.emplace_back(token);
+    };
+
+    // Retrieve current token and lookahead tokens
+    const ForthToken& current = getToken(tokens, index);
+    const ForthToken& next = getToken(tokens, index + 1);
+    const ForthToken& third = getToken(tokens, index + 2);
+    const ForthToken& fourth = getToken(tokens, index + 3);
+
+    // Pattern-matching optimizations
     if (current.value == "R>" && next.type == TOKEN_NUMBER && third.value == "+" && fourth.value == ">R") {
-        auto token = create_optimized_token("INC_R@");
-        token.int_value = next.int_value;
-        optimized_tokens.emplace_back(token);
-        index += 3; // Skip 3 extra tokens
+        addOptimizedToken("INC_R@", next.int_value);
+        index += 3; // Skip next 3 tokens
         optimizations++;
         return true;
     }
 
-    //   R> n - >R (dec pointer on return stack)
     if (current.value == "R>" && next.type == TOKEN_NUMBER && third.value == "-" && fourth.value == ">R") {
-        auto token = create_optimized_token("DEC_R@");
-        token.int_value = next.int_value;
-        optimized_tokens.emplace_back(token);
-        index += 3; // Skip 3 extra tokens
+        addOptimizedToken("DEC_R@", next.int_value);
+        index += 3;
         optimizations++;
         return true;
     }
 
-    // R@ C! the last part of n R@ C! - we can optimize this
-    if (current.value == "R@" && next.value == "C!") {
-        optimized_tokens.emplace_back(create_optimized_token("R@_C!"));
+    if (current.type == TOKEN_NUMBER && next.type == TOKEN_VARIABLE && third.value == "!") {
+        addOptimizedToken("LIT_VAR_!", current.int_value, next.value);
+        index += 2;
         optimizations++;
+        return true;
+    }
+
+    if (current.value == "R@" && next.value == "C!") {
+        addOptimizedToken("R@_C!");
         index += 1;
+        optimizations++;
         return true;
     }
 
     if (current.value == "R@" && next.value == "!") {
-        optimized_tokens.emplace_back(create_optimized_token("R@_!"));
-        optimizations++;
+        addOptimizedToken("R@_!");
         index += 1;
+        optimizations++;
         return true;
     }
 
-
-    if (current.type == TOKEN_VARIABLE && next.value == "@") {
-        auto token = create_optimized_token("VAR_@");
-        token.word_id = current.word_id;
-        token.value = current.value;
-        optimized_tokens.emplace_back(token);
-        optimizations++;
-        index += 1;
-        return true;
+    if (current.type == TOKEN_VARIABLE) {
+        if (next.value == "@") {
+            addOptimizedToken("VAR_@", 0, current.value, current.word_id);
+            index += 1;
+            optimizations++;
+            return true;
+        }
+        if (next.value == "!") {
+            addOptimizedToken("VAR_!", 0, current.value, current.word_id);
+            index += 1;
+            optimizations++;
+            return true;
+        }
+        if (next.value == ">R") {
+            addOptimizedToken("VAR_TOR", 0, current.value, current.word_id);
+            index += 1;
+            optimizations++;
+            return true;
+        }
     }
 
-    if (current.type == TOKEN_VARIABLE && next.value == "!") {
-        auto token = create_optimized_token("VAR_!");
-        token.word_id = current.word_id;
-        token.value = current.value;
-        optimized_tokens.emplace_back(token);
-        optimizations++;
+    if (current.value == "C@" && next.value == "EMIT") {
+        addOptimizedToken("C@_EMIT");
         index += 1;
+        optimizations++;
         return true;
     }
 
     if (current.value == "DUP" && next.value == "+") {
-        optimized_tokens.emplace_back(create_optimized_token("LEA_TOS"));
-        optimizations++;
+        addOptimizedToken("LEA_TOS");
         index += 1;
+        optimizations++;
         return true;
     }
 
     if (current.value == "SWAP" && next.value == "DROP") {
-        optimized_tokens.emplace_back(create_optimized_token("MOV_TOS_1"));
-        optimizations++;
+        addOptimizedToken("MOV_TOS_1");
         index += 1;
+        optimizations++;
         return true;
     }
 
-    // Pattern: DUP ROT → TUCK
     if (current.value == "DUP" && next.value == "ROT") {
-        optimized_tokens.emplace_back(create_optimized_token("TUCK"));
-        optimizations++;
+        addOptimizedToken("TUCK");
         index += 1;
+        optimizations++;
         return true;
     }
 
-    // Pattern: OVER DROP → DUP
     if (current.value == "OVER" && next.value == "DROP") {
-        optimized_tokens.emplace_back(create_optimized_token("DUP"));
-        optimizations++;
+        addOptimizedToken("DUP");
         index += 1;
+        optimizations++;
         return true;
     }
 
     return false;
 }
-
 
 bool Optimizer::is_power_of_two(int64_t value) {
     return (value > 0 && (value & (value - 1)) == 0);

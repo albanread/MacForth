@@ -128,7 +128,7 @@ void Compiler::compile_words(std::deque<ForthToken> &input_tokens) {
 
     // Step 2: Extract the word name
     std::string word_name = extract_word_name(tokens);
-    // std::cout << "Compiling: " << word_name << std::endl;
+
 
     // Step 3: Start code generation for the function
     code_generator_startFunction(word_name);
@@ -142,9 +142,9 @@ void Compiler::compile_words(std::deque<ForthToken> &input_tokens) {
             break;
         }
 
-        // std::cout << "-- Generating: " << token.value;
+
         process_token(token, tokens, word_name);
-        std::cout << std::endl;
+
 
         tokens.pop_front(); // Remove the processed token
     }
@@ -214,19 +214,19 @@ void Compiler::process_token(const ForthToken &token, std::deque<ForthToken> &to
 
 // Helper Method: Compile Number Token
 void Compiler::compile_token_number(const ForthToken &token) {
-    //std::cout << "LITERAL: " << token.int_value;
+
     compile_pushLiteral(token.int_value);
 }
 
 // Helper Method: Compile Float Token
 void Compiler::compile_token_float(const ForthToken &token) {
-    //std::cout << "FLOAT LITERAL: " << token.float_value;
+
     compile_pushLiteralFloat(token.float_value);
 }
 
 // Helper Method: Compile Word Token
 void Compiler::compile_token_word(const ForthToken &token, std::deque<ForthToken> &tokens, [[maybe_unused]] std::string &word_name) {
-    //std::cout << "CALL WORD: " << token.value << std::endl;
+
 
     auto word_found = ForthDictionary::instance().findWord(token.value.c_str());
     if (word_found == nullptr) {
@@ -242,12 +242,12 @@ void Compiler::compile_token_word(const ForthToken &token, std::deque<ForthToken
         compile_pushVariableAddress(reinterpret_cast<uint64_t>(word_found->data), called_word_name);
 
     } else if (word_found->generator) {
-        // std::cout << "Calling gen: " << token.value << std::endl;
+
         word_found->generator();
     } else if (word_found->executable) {
         compile_call_forth(word_found->executable, called_word_name);
     } else if (word_found->immediate_compiler) {
-        // std::cout << "Calling imm comp: " << token.value << std::endl;
+
         word_found->immediate_compiler(tokens);
     }
 }

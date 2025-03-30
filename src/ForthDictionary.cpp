@@ -9,7 +9,32 @@
 #include "SymbolTable.h"
 #include "Tokenizer.h"
 #include "SignalHandler.h"
+#include <map>
 
+// Define a helper function to retrieve color codes
+std::string getColorCode(ForthWordType type) {
+    static const std::map<ForthWordType, std::string> colorMap = {
+        {ForthWordType::CONSTANT, "\033[1;31m"}, // Red
+        {ForthWordType::WORD, "\033[1;32m"}, // Green
+        {ForthWordType::VARIABLE, "\033[1;34m"}, // Blue
+        {ForthWordType::VALUE, "\033[1;33m"}, // Yellow
+        {ForthWordType::STRING, "\033[1;35m"}, // Magenta
+        {ForthWordType::FLOAT, "\033[1;36m"}, // Cyan
+        {ForthWordType::ARRAY1, "\033[0;31m"}, // Dim Red
+        {ForthWordType::MACRO, "\033[0;32m"}, // Dim Green
+        {ForthWordType::RECORD, "\033[0;34m"}, // Dim Blue
+        {ForthWordType::ARRAY2, "\033[0;33m"}, // Dim Yellow
+        {ForthWordType::ARRAY3, "\033[0;35m"}, // Dim Magenta
+        {ForthWordType::OBJECT, "\033[0;36m"}, // Dim Cyan
+        {ForthWordType::VOCABULARY, "\033[1;37m"}, // Bright White
+    };
+
+    auto it = colorMap.find(type);
+    if (it != colorMap.end()) {
+        return it->second;
+    }
+    return "\033[0m"; // Default (reset) if type is unknown
+}
 
 ForthDictionary::ForthDictionary() {
     // Initialize all dictionary lists to null pointers
@@ -45,9 +70,7 @@ ForthDictionaryEntry *ForthDictionary::addCodeWord(
     const ForthFunction executable,
     const ImmediateInterpreter immediate_interpreter,
     const ImmediateCompiler immediate_compiler
-    ) {
-
-
+) {
     const size_t length = wordName.size();
     if (length >= MAX_WORD_LENGTH) {
         throw std::length_error("Word length exceeds the maximum allowed size.");
@@ -56,9 +79,9 @@ ForthDictionaryEntry *ForthDictionary::addCodeWord(
     // Get the current head of the list for this word length
     ForthDictionaryEntry *oldHead = dictionaryLists[length]; // Current head of the chain
 
-    std::string  vocab_name = vocabName;
+    std::string vocab_name = vocabName;
 
-    if ( vocabName.empty() ) {
+    if (vocabName.empty()) {
         vocab_name = getCurrentVocabularyName();
     }
 
@@ -92,7 +115,6 @@ ForthDictionaryEntry *ForthDictionary::addCodeWord(
 }
 
 
-
 ForthDictionaryEntry *ForthDictionary::addCodeWord(
     const std::string &wordName,
     const std::string &vocabName,
@@ -101,8 +123,6 @@ ForthDictionaryEntry *ForthDictionary::addCodeWord(
     const ForthFunction generator,
     const ForthFunction executable,
     const ImmediateInterpreter immediate_interpreter) {
-
-
     const size_t length = wordName.size();
     if (length >= MAX_WORD_LENGTH) {
         throw std::length_error("Word length exceeds the maximum allowed size.");
@@ -111,9 +131,9 @@ ForthDictionaryEntry *ForthDictionary::addCodeWord(
     // Get the current head of the list for this word length
     ForthDictionaryEntry *oldHead = dictionaryLists[length]; // Current head of the chain
 
-    std::string  vocab_name = vocabName;
+    std::string vocab_name = vocabName;
 
-    if ( vocabName.empty() ) {
+    if (vocabName.empty()) {
         vocab_name = getCurrentVocabularyName();
     }
 
@@ -165,7 +185,7 @@ ForthDictionaryEntry *ForthDictionary::findWord(const char *name) const {
 
     // Create a set of vocab IDs prioritized by search order
     std::unordered_set<size_t> vocabSet;
-    for (const auto &vocab : searchOrder) {
+    for (const auto &vocab: searchOrder) {
         if (vocab != nullptr) {
             vocabSet.insert(vocab->vocab_id);
         }
@@ -206,7 +226,7 @@ bool ForthDictionary::isVariable(const char *name) const {
 
     // Create a set of vocab IDs prioritized by search order
     std::unordered_set<size_t> vocabSet;
-    for (const auto &vocab : searchOrder) {
+    for (const auto &vocab: searchOrder) {
         if (vocab != nullptr) {
             vocabSet.insert(vocab->vocab_id);
         }
@@ -224,8 +244,6 @@ bool ForthDictionary::isVariable(const char *name) const {
 
     return false; // Word not found
 }
-
-
 
 
 // this executes 'simple' executable names.
@@ -252,7 +270,7 @@ ForthDictionaryEntry *ForthDictionary::findWordByToken(const ForthToken &word) c
 
     // Create a set of vocab IDs from the search order for fast lookup
     std::unordered_set<size_t> vocabSet;
-    for (const auto &vocab : searchOrder) {
+    for (const auto &vocab: searchOrder) {
         if (vocab != nullptr) {
             vocabSet.insert(vocab->vocab_id);
         }
@@ -271,7 +289,6 @@ ForthDictionaryEntry *ForthDictionary::findWordByToken(const ForthToken &word) c
 
     return nullptr; // Word not found
 }
-
 
 
 void ForthDictionary::execWordByToken(const ForthToken &word) const {
@@ -300,7 +317,6 @@ ForthDictionaryEntry *ForthDictionary::addWord(const char *name, ForthState stat
     std::transform(vocabNameStr.begin(), vocabNameStr.end(), vocabNameStr.begin(), ::toupper);
 
 
-
     size_t length = std::strlen(name);
     if (length >= MAX_WORD_LENGTH) {
         throw std::length_error("Word length exceeds the maximum allowed size.");
@@ -319,7 +335,7 @@ ForthDictionaryEntry *ForthDictionary::addWord(const char *name, ForthState stat
         throw std::bad_alloc{};
     }
 
-    ForthDictionaryEntry *newWord = new(memory) ForthDictionaryEntry(oldHead, name, vocabName, state, type);
+    auto *newWord = new(memory) ForthDictionaryEntry(oldHead, name, vocabName, state, type);
 
 
     // Update the head of the list for this word length
@@ -365,14 +381,20 @@ void ForthDictionary::displayDictionary() const {
     }
 }
 
- void ForthDictionary::displayWords() const {
+
+void ForthDictionary::displayWords() const {
     std::string vocab_name = instance().getCurrentVocabularyName();
     std::cout << "Forth Dictionary (Current Vocabulary: " << vocab_name << ")\n";
     std::cout << "LatestWord: " << latestWordName << "\n";
 
     int n = 0;
     for (auto* entry : wordOrder) {
-        std::cout << entry->getWordName() << " ";
+        // Get the color code for the word type
+        std::string color = getColorCode(entry->type);
+
+        // Print the word with its corresponding color
+        std::cout << color << entry->getWordName() << "\033[0m "; // Reset to default after printing
+
         n += entry->getWordName().size();
 
         // Wrap the output to avoid overly long lines
@@ -385,6 +407,7 @@ void ForthDictionary::displayDictionary() const {
     // Ensure the output stream is flushed
     std::cout << std::endl << std::flush;
 }
+
 
 
 void ForthDictionary::setVocabulary(const std::string &vocabName) {
@@ -432,7 +455,6 @@ void ForthDictionary::resetSearchOrder() {
 
 
 ForthDictionaryEntry *ForthDictionary::createVocabulary(const std::string &vocabName) {
-
     if (vocabName.empty()) {
         throw std::invalid_argument("Vocabulary name cannot be empty.");
     }
@@ -540,15 +562,16 @@ void ForthDictionary::forgetLastWord() {
     }
 
     // The word to forget is the most recently added one
-    ForthDictionaryEntry* wordToForget = wordOrder.back();
+    ForthDictionaryEntry *wordToForget = wordOrder.back();
     wordOrder.pop_back();
 
     std::cout << "Forgetting word: " << latestWordName << "\n";
 
     const size_t length = latestWordName.size();
 
-    if (wordToForget->executable) { // free asmjit memory
-        if (const auto runtime =  &JitContext::instance()._rt) {
+    if (wordToForget->executable) {
+        // free asmjit memory
+        if (const auto runtime = &JitContext::instance()._rt) {
             runtime->release(wordToForget->executable);
             wordToForget->executable = nullptr;
             runtime->release(wordToForget->immediate_interpreter);
@@ -565,12 +588,12 @@ void ForthDictionary::forgetLastWord() {
     WordHeap::instance().deallocate(wordToForget->word_id);
 
     // Update dictionaryLists to remove the entry
-    auto removeFromChain = [](ForthDictionaryEntry*& head, ForthDictionaryEntry* entry) {
+    auto removeFromChain = [](ForthDictionaryEntry *&head, ForthDictionaryEntry *entry) {
         if (head == entry) {
             head = entry->previous;
             return true;
         }
-        ForthDictionaryEntry* current = head;
+        ForthDictionaryEntry *current = head;
         while (current && current->previous != entry) {
             current = current->previous;
         }
@@ -601,7 +624,7 @@ void ForthDictionary::forgetLastWord() {
     unusedVocabularyStorage.erase(
         std::remove_if(unusedVocabularyStorage.begin(),
                        unusedVocabularyStorage.end(),
-                       [wordToForget](const std::unique_ptr<ForthDictionaryEntry>& entry) {
+                       [wordToForget](const std::unique_ptr<ForthDictionaryEntry> &entry) {
                            return entry.get() == wordToForget;
                        }),
         unusedVocabularyStorage.end());

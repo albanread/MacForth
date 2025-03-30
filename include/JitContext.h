@@ -3,6 +3,8 @@
 
 #include <iostream>
 #include <cstdio>
+#include <ForthDictionary.h>
+
 #include "asmjit/asmjit.h"
 #include "Singleton.h"
 #include "SignalHandler.h"
@@ -71,24 +73,26 @@ public:
         for (size_t i = 0; i < sectionCount; ++i) {
             const asmjit::Section *section = _code.sectionById(i);
             if (!section) continue;
+            std::cout << "Latest Word: " << ForthDictionary::instance().getLatestName() << std::dec << std::endl;
             const asmjit::CodeBuffer &buffer = section->buffer();
             std::cout << "Section " << i << ": " << section->name() << std::endl;
             std::cout << "  Buffer size    : " << buffer.size() << " bytes" << std::endl;
+            std::cout << "  Real size    : " << section->realSize() << " bytes" << std::endl;
+            std::cout << "  Virtual size    : " << section->virtualSize()   << " bytes" << std::endl;
             std::cout << "  Buffer capacity: " << buffer.capacity() << " bytes" << std::endl;
         }
     }
 
+ void displayAsmJitMemoryUsage() const {
+    auto toKB = [](size_t bytes) { return bytes / 1024.0; };
 
-    void displayAsmJitMemoryUsage() const {
-        auto toMB = [](size_t bytes) { return bytes / 1024.0 / 1024.0; };
-
-        std::cout << "AsmJit Memory Usage Metrics:" << std::endl;
-        std::cout << "    Used:       " << toMB(_rt.allocator()->statistics().usedSize()) << " MB" << std::endl;
-        std::cout << "    Reserved:   " << toMB(_rt.allocator()->statistics().reservedSize()) << " MB" << std::endl;
-        std::cout << "    Overhead:   " << toMB(_rt.allocator()->statistics().overheadSize()) << " MB" << std::endl;
-        std::cout << "    Allocation Count: " << _rt.allocator()->statistics().allocationCount() << " allocations" <<
-                std::endl;
-    }
+    std::cout << "AsmJit Memory Usage Metrics:" << std::endl;
+    std::cout << "    Used:       " << toKB(_rt.allocator()->statistics().usedSize()) << " KB" << std::endl;
+    std::cout << "    Reserved:   " << toKB(_rt.allocator()->statistics().reservedSize()) << " KB" << std::endl;
+    std::cout << "    Overhead:   " << toKB(_rt.allocator()->statistics().overheadSize()) << " KB" << std::endl;
+    std::cout << "    Allocation Count: "
+              << _rt.allocator()->statistics().allocationCount() << " allocations" << std::endl;
+}
 
 
 

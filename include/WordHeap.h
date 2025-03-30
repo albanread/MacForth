@@ -175,7 +175,7 @@ public:
                         }
                     }
 
-                    std::cout << "|" << std::endl;
+                    std::cout << "|" << std::dec << std::endl;
                 }
             }
         }

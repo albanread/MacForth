@@ -21,6 +21,8 @@ public:
     bool optimize_literal_comparison(const std::deque<ForthToken> &tokens, std::deque<ForthToken> &optimized_tokens,
                                      size_t index);
 
+    ForthToken getToken(const std::deque<ForthToken> &tokens, size_t i);
+
     bool optimize_peephole_case(const std::deque<ForthToken> &tokens, std::deque<ForthToken> &optimized_tokens,
                                 size_t &index);
 

@@ -49,8 +49,6 @@ using ForthFunction = void(*)();
 using ImmediateInterpreter = void(*)(std::deque<ForthToken> &tokens);
 using ImmediateCompiler = void(*)(std::deque<ForthToken> &tokens);
 
-#include <cstdint>
-#include <cstddef>
 
 struct ForthDictionaryEntry {
     ForthDictionaryEntry *previous;
@@ -112,7 +110,7 @@ struct ForthDictionaryEntry {
           data(nullptr),  firstWordInVocabulary(nullptr), immediate_compiler(nullptr), type(wordType) {
         word_id = SymbolTable::instance().addSymbol(wordName);
         vocab_id = SymbolTable::instance().addSymbol(vocabName);
-        const char  asciiInput[8] = {'F', 'O', 'R', 'T', 'H', 'J', 'I', 'T'};
+        constexpr char  asciiInput[8] = {'F', 'O', 'R', 'T', 'H', 'J', 'I', 'T'};
         std::memcpy(res1, asciiInput, 8);
 
 
@@ -127,7 +125,7 @@ struct ForthDictionaryEntry {
         data(nullptr),  firstWordInVocabulary(nullptr), immediate_compiler(immediate_compiler), type(wordType) {
         word_id = SymbolTable::instance().addSymbol(wordName);
         vocab_id = SymbolTable::instance().addSymbol(vocabName);
-        const char  asciiInput[8] = {'F', 'O', 'R', 'T', 'H', 'J', 'I', 'T'};
+        constexpr char  asciiInput[8] = {'F', 'O', 'R', 'T', 'H', 'J', 'I', 'T'};
         std::memcpy(res1, asciiInput, 8);
     }
 
@@ -254,7 +252,7 @@ struct ForthDictionaryEntry {
 
 
     void *AllotData(int n) {
-        auto id = getID();
+        const auto id = getID();
         data = WordHeap::instance().allocate(id, n);
         return data;
     }
@@ -270,16 +268,16 @@ struct ForthDictionaryEntry {
                                                : "GENERATOR") << "\n";
         std::cout << "  Type: " << getTypeString() << "\n";
         std::cout << "  Data Pointer: " << data << "\n";
-        std::cout << "  Data Size: " << (data ? WordHeap::instance().getAllocation(id)->size : 0) << "\n";
-        std::cout << std::hex;
+        std::cout << std::dec << "  Data Size: " << (data ? WordHeap::instance().getAllocation(id)->size : 0) << "\n";
+
         std::cout << "  word_id: "  <<  word_id << "\n";
         std::cout << "  vocab_id: " << vocab_id << "\n";
-        std::cout << "  ID: " << id << "\n";
-
+        std::cout << "  ID: " << id << "\n" << std::hex;
         std::cout << "  Previous Word: " << previous << "\n";
         std::cout << "  Executable: " << executable << "\n";
         std::cout << "  Generator: " << generator << "\n";
         std::cout << "  Immediate Interpreter: " << immediate_interpreter << "\n";
+        std::cout << "  Immediate Compiler: " << immediate_compiler << "\n";
         std::cout << std::dec;
 
     }

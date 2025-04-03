@@ -80,24 +80,24 @@ struct ForthDictionaryEntry {
 
     // Constructor
     ForthDictionaryEntry(ForthDictionaryEntry *prev, const std::string &wordName,
-        const std::string &vocabName, ForthState wordState, ForthWordType wordType)
+                         const std::string &vocabName, ForthState wordState, ForthWordType wordType)
         : previous(prev), state(wordState), executable(nullptr), generator(nullptr), immediate_interpreter(nullptr),
-          data(nullptr),  firstWordInVocabulary(nullptr), immediate_compiler(nullptr), type(wordType) {
+          data(nullptr), firstWordInVocabulary(nullptr), immediate_compiler(nullptr), type(wordType) {
         word_id = SymbolTable::instance().addSymbol(wordName);
         vocab_id = SymbolTable::instance().addSymbol(vocabName);
-        const char  asciiInput[8] = {'F', 'O', 'R', 'T', 'H', 'J', 'I', 'T'};
+        const char asciiInput[8] = {'F', 'O', 'R', 'T', 'H', 'J', 'I', 'T'};
         std::memcpy(res1, asciiInput, 8);
     }
 
 
     ForthDictionaryEntry(ForthDictionaryEntry *prev, const std::string &wordName,
-    const std::string &vocabName, ForthState wordState, ForthWordType wordType,
-     ForthFunction executable)
-    : previous(prev), state(wordState), executable(executable), generator(nullptr), immediate_interpreter(nullptr),
-      data(nullptr),  firstWordInVocabulary(nullptr), immediate_compiler(nullptr), type(wordType)  {
+                         const std::string &vocabName, ForthState wordState, ForthWordType wordType,
+                         ForthFunction executable)
+        : previous(prev), state(wordState), executable(executable), generator(nullptr), immediate_interpreter(nullptr),
+          data(nullptr), firstWordInVocabulary(nullptr), immediate_compiler(nullptr), type(wordType) {
         word_id = SymbolTable::instance().addSymbol(wordName);
         vocab_id = SymbolTable::instance().addSymbol(vocabName);
-        const char  asciiInput[8] = {'F', 'O', 'R', 'T', 'H', 'J', 'I', 'T'};
+        const char asciiInput[8] = {'F', 'O', 'R', 'T', 'H', 'J', 'I', 'T'};
         std::memcpy(res1, asciiInput, 8);
     }
 
@@ -107,25 +107,23 @@ struct ForthDictionaryEntry {
                          ForthFunction executable, ImmediateInterpreter immediate_interpreter)
         : previous(prev), state(wordState), executable(executable), generator(generator),
           immediate_interpreter(immediate_interpreter),
-          data(nullptr),  firstWordInVocabulary(nullptr), immediate_compiler(nullptr), type(wordType) {
+          data(nullptr), firstWordInVocabulary(nullptr), immediate_compiler(nullptr), type(wordType) {
         word_id = SymbolTable::instance().addSymbol(wordName);
         vocab_id = SymbolTable::instance().addSymbol(vocabName);
-        constexpr char  asciiInput[8] = {'F', 'O', 'R', 'T', 'H', 'J', 'I', 'T'};
+        constexpr char asciiInput[8] = {'F', 'O', 'R', 'T', 'H', 'J', 'I', 'T'};
         std::memcpy(res1, asciiInput, 8);
-
-
     }
 
     ForthDictionaryEntry(ForthDictionaryEntry *prev, const std::string &wordName, const std::string &vocabName,
-                       ForthState wordState, ForthWordType wordType, ForthFunction generator,
-                       ForthFunction executable, ImmediateInterpreter immediate_interpreter,
-                       ImmediateCompiler immediate_compiler)
-      : previous(prev), state(wordState), executable(executable), generator(generator),
-        immediate_interpreter(immediate_interpreter),
-        data(nullptr),  firstWordInVocabulary(nullptr), immediate_compiler(immediate_compiler), type(wordType) {
+                         ForthState wordState, ForthWordType wordType, ForthFunction generator,
+                         ForthFunction executable, ImmediateInterpreter immediate_interpreter,
+                         ImmediateCompiler immediate_compiler)
+        : previous(prev), state(wordState), executable(executable), generator(generator),
+          immediate_interpreter(immediate_interpreter),
+          data(nullptr), firstWordInVocabulary(nullptr), immediate_compiler(immediate_compiler), type(wordType) {
         word_id = SymbolTable::instance().addSymbol(wordName);
         vocab_id = SymbolTable::instance().addSymbol(vocabName);
-        constexpr char  asciiInput[8] = {'F', 'O', 'R', 'T', 'H', 'J', 'I', 'T'};
+        constexpr char asciiInput[8] = {'F', 'O', 'R', 'T', 'H', 'J', 'I', 'T'};
         std::memcpy(res1, asciiInput, 8);
     }
 
@@ -180,8 +178,8 @@ struct ForthDictionaryEntry {
         std::cout << "-------------------------------------------------------------------------" << std::endl;
     }
 
-    [[nodiscard]] const void* getAddress() const {
-        return static_cast<const void*>(this);
+    [[nodiscard]] const void *getAddress() const {
+        return static_cast<const void *>(this);
     }
 
     [[nodiscard]] uint64_t getID() const {
@@ -198,8 +196,6 @@ struct ForthDictionaryEntry {
     [[nodiscard]] std::string getVocabularyName() const {
         return SymbolTable::instance().getSymbol(vocab_id);
     }
-
-
 
 
     // Fixed getTypeString function (with proper type casting for enum class ForthWordType)
@@ -257,31 +253,60 @@ struct ForthDictionaryEntry {
         return data;
     }
 
+    static void printPointerOrNo(const void* ptr, const char* nullMessage = "No") {
+        if (ptr) {
+            std::cout << ptr; // Print the pointer address
+        } else {
+            std::cout << nullMessage; // Print the fallback message
+        }
+    }
 
     // Display word details
     void display() const {
         std::cout << "Word: " << getWordName() << "\n";
-        std::cout << "  State: " << (state == ForthState::EXECUTABLE
-                                         ? "EXECUTABLE"
-                                         : state == ForthState::IMMEDIATE
-                                               ? "IMMEDIATE"
-                                               : "GENERATOR") << "\n";
+        std::cout << "  State: "
+                << (state == ForthState::EXECUTABLE
+                        ? "EXECUTABLE"
+                        : state == ForthState::IMMEDIATE
+                              ? "IMMEDIATE"
+                              : "GENERATOR")
+                << "\n";
         std::cout << "  Type: " << getTypeString() << "\n";
-        std::cout << "  Data Pointer: " << data << "\n";
-        std::cout << std::dec << "  Data Size: " << (data ? WordHeap::instance().getAllocation(id)->size : 0) << "\n";
+        std::cout << "  Data Pointer: ";
+        printPointerOrNo((void*)data);
+        std::cout << "\n";
+        if ( data )
+            std::cout << std::dec << "  Data Size: " << (data ? WordHeap::instance().getAllocation(id)->size : 0) << "\n";
 
-        std::cout << "  word_id: "  <<  word_id << "\n";
-        std::cout << "  vocab_id: " << vocab_id << "\n";
+        std::cout << "  word_id: " << word_id << "\n";
+        std::cout << "  vocabulary: " << SymbolTable::instance().getSymbol(vocab_id) << "\n";
         std::cout << "  ID: " << id << "\n" << std::hex;
-        std::cout << "  Previous Word: " << previous << "\n";
-        std::cout << "  Executable: " << executable << "\n";
-        std::cout << "  Generator: " << generator << "\n";
-        std::cout << "  Immediate Interpreter: " << immediate_interpreter << "\n";
-        std::cout << "  Immediate Compiler: " << immediate_compiler << "\n";
-        std::cout << std::dec;
 
+        // For each pointer, check whether it's null and display accordingly
+        std::cout << "  Previous Word: ";
+        if (previous) {
+            std::cout << std::hex << previous;
+        } else {
+            std::cout << "No";
+        }
+        std::cout << "\n";
+        std::cout << std::hex;
+        std::cout << "  Executable: ";
+        printPointerOrNo((void*)executable); // Cast to void* for safe printing
+        std::cout << "\n";
+
+        std::cout << "  Generator: ";
+        printPointerOrNo((void*)generator);
+        std::cout << "\n";
+
+        std::cout << "  Immediate Function: ";
+        printPointerOrNo((void*)immediate_interpreter);
+        std::cout << "\n";
+
+        // display data if we have any to display
+        if (data) {
+            WordHeap::instance().listAllocation(id);
+        }
     }
 };
-
-
 #endif // FORTH_DICTIONARY_ENTRY_H

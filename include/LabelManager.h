@@ -123,6 +123,15 @@ public:
         assembler.jge(it->second);
     }
 
+    void call(asmjit::x86::Assembler &assembler, const std::string &name) const {
+        auto it = _labels.find(name);
+        if (it == _labels.end()) {
+            std::cerr << "LabelManager: Attempting to jump to unknown label: " << name;
+            SignalHandler::instance().raise(21);
+        }
+        assembler.call(it->second);
+    }
+
     void clearLabels() {
         _labels.clear();
     }

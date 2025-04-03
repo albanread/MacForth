@@ -42,6 +42,8 @@ void stack_self();
 
 void code_generator_puts_no_crlf(const char *str);
 
+void code_generator_add_memory_words();
+
 void code_generator_add_variables();
 
 void code_generator_add_immediate_words();

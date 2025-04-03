@@ -11,6 +11,7 @@
 #include <cctype>
 
 
+
 // Enum to represent the data type of word allocations
 enum class WordDataType {
     DEFAULT, // Treat as raw bytes (FORTH behavior)
@@ -93,11 +94,10 @@ public:
 
         // Store the allocation along with type metadata
         allocations[wordId] = {ptr, size, 0, type};
-
-        std::cout << "WordHeap: Successfully allocated "
-                << size << " bytes for word ID: "
-                << std::hex << wordId << " Name: " << SymbolTable::instance().getSymbol(wordId)
-                << "." << std::endl;
+        // std::cout << "WordHeap: Successfully allocated "
+        //         << size << " bytes for word ID: "
+        //         << std::hex << wordId << " Name: " << SymbolTable::instance().getSymbol(wordId)
+        //         << "." << std::endl;
         return ptr;
     }
 
@@ -117,6 +117,77 @@ public:
         return (it != allocations.end()) ? &it->second : nullptr;
     }
 
+    void display_metadata(int wordId, WordAllocation a) const {
+        // Display metadata for the allocation
+
+        std::cout << "Name: " << SymbolTable::instance().getSymbol(wordId) << std::endl;
+        std::cout << "Size: " << a.size << " bytes"
+                << ", Type: " << wordDataTypeToString(a.WordAllocation::dataType) << std::endl;
+        std::cout << "From: " << a.WordAllocation::dataPtr
+                << ", To: " << reinterpret_cast<void *>(
+                    (uint64_t) a.WordAllocation::dataPtr + a.WordAllocation::size - 1)
+                << std::endl;
+    }
+
+    void dump_data(WordAllocation allocation) const {
+        // FORTH people like to work on raw bytes...
+        if (allocation.WordAllocation::dataType == WordDataType::DEFAULT) {
+            // Retrieve pointer to data and calculate the number of bytes to display
+            const unsigned char *data = reinterpret_cast<const unsigned char *>(allocation.WordAllocation::dataPtr);
+            size_t bytesToDisplay = std::min(size_t(32), allocation.WordAllocation::size); // Show up to 32 bytes
+
+            // Display the hex ASCII dump
+            std::cout << "Hex ASCII dump (First " << std::dec << bytesToDisplay << " bytes):" << std::endl;
+
+            // Hex and ASCII formatting loop
+            for (size_t i = 0; i < bytesToDisplay; i += 16) {
+                // Group output in 16-byte rows
+                // Print offset
+                std::cout << "[0x" << std::hex << std::setw(4) << std::setfill('0') << i << "] ";
+
+                // Print hex values
+                for (size_t j = 0; j < 16; ++j) {
+                    if (i + j < bytesToDisplay) {
+                        std::cout << std::hex << std::setw(2) << std::setfill('0')
+                                << static_cast<int>(data[i + j]) << " ";
+                    } else {
+                        std::cout << "   "; // Fills gap for unused bytes
+                    }
+                }
+
+                // Spacer between hex and ASCII
+                std::cout << "  |";
+
+                // Print ASCII characters
+                for (size_t j = 0; j < 16; ++j) {
+                    if (i + j < bytesToDisplay) {
+                        unsigned char c = data[i + j];
+                        if (std::isprint(c)) {
+                            std::cout << c; // Printable characters
+                        } else {
+                            std::cout << '.'; // Replace unprintable characters with '.'
+                        }
+                    }
+                }
+
+                std::cout << "|" << std::dec << std::endl;
+            }
+        }
+    }
+
+
+    void listAllocation(const uint64_t id) {
+        auto it = allocations.find(id);
+
+        if (it != allocations.end()) {
+            display_metadata(id, it->second);
+            dump_data(it->second);
+            std::cout << std::endl;
+        } else {
+            std::cout << "WordHeap: Allocation not found for word ID: " << id << std::endl;
+        }
+    }
+
     void listAllocations() const {
         if (allocations.empty()) {
             std::cout << "WordHeap: No allotments have been allocated." << std::endl;
@@ -126,60 +197,11 @@ public:
         std::cout << "WordHeap: Current allot allocations:" << std::endl;
 
         for (const auto &[wordId, allocation]: allocations) {
-            // Display metadata for the allocation
-            std::cout << "  Word ID: " << wordId
-                    << ", Name: " << SymbolTable::instance().getSymbol(wordId)
-                    << ", Size: " << allocation.size << " bytes"
-                    << ", Type: " << wordDataTypeToString(allocation.dataType)
-                    << ", Address: " << allocation.dataPtr
-                    << ", To: " << reinterpret_cast<void *>((uint64_t) allocation.dataPtr + allocation.size - 1)
-                    << std::endl;
-
-            // FORTH people like to work on raw bytes...
-            if (allocation.dataType == WordDataType::DEFAULT) {
-                // Retrieve pointer to data and calculate the number of bytes to display
-                const unsigned char *data = reinterpret_cast<const unsigned char *>(allocation.dataPtr);
-                size_t bytesToDisplay = std::min(size_t(32), allocation.size); // Show up to 32 bytes
-
-                // Display the hex ASCII dump
-                std::cout << "    Hex ASCII Dump (First " << std::dec << bytesToDisplay << " bytes):" << std::endl;
-
-                // Hex and ASCII formatting loop
-                for (size_t i = 0; i < bytesToDisplay; i += 16) {
-                    // Group output in 16-byte rows
-                    // Print offset
-                    std::cout << "      [0x" << std::hex << std::setw(4) << std::setfill('0') << i << "] ";
-
-                    // Print hex values
-                    for (size_t j = 0; j < 16; ++j) {
-                        if (i + j < bytesToDisplay) {
-                            std::cout << std::hex << std::setw(2) << std::setfill('0')
-                                    << static_cast<int>(data[i + j]) << " ";
-                        } else {
-                            std::cout << "   "; // Fills gap for unused bytes
-                        }
-                    }
-
-                    // Spacer between hex and ASCII
-                    std::cout << "  |";
-
-                    // Print ASCII characters
-                    for (size_t j = 0; j < 16; ++j) {
-                        if (i + j < bytesToDisplay) {
-                            unsigned char c = data[i + j];
-                            if (std::isprint(c)) {
-                                std::cout << c; // Printable characters
-                            } else {
-                                std::cout << '.'; // Replace unprintable characters with '.'
-                            }
-                        }
-                    }
-
-                    std::cout << "|" << std::dec << std::endl;
-                }
-            }
+            display_metadata(wordId, allocation);
+            dump_data(allocation);
         }
     }
+
 
     // Clear all allocations
     void clear() {

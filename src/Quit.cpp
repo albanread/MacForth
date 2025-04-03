@@ -79,7 +79,7 @@ inline void interactive_terminal() {
     std::string accumulated_input;
     bool compiling = false;
 
-    std::cout << "ForthJIT " << std::endl;
+    // std::cout << "ForthJIT " << std::endl;
     display_stack_status();
 
     LineReader::initialize();

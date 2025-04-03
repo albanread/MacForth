@@ -15,6 +15,7 @@
 #include "SignalHandler.h"
 #include "Settings.h"
 // MacOS timing functions.
+#include <signal.h>
 #include <mach/mach_time.h>
 #include "Interpreter.h"
 
@@ -134,6 +135,7 @@ bool initialize_assembler(asmjit::x86::Assembler *&assembler) {
 
 
 // set the code for an entry to stack its own address.
+// used by a vocabulary entry etc
 void set_stack_self(const ForthDictionaryEntry *e) {
     code_generator_startFunction(e->getWordName());
 
@@ -235,16 +237,21 @@ void code_generator_initialize() {
 
     auto &dict = ForthDictionary::instance();
 
-    std::cout << "FORTH creating dictionary" << std::endl;
+    // std::cout << "FORTH creating dictionary" << std::endl;
     const auto e = dict.createVocabulary("FORTH");
     set_stack_self(e);
 
     const auto e1 = dict.createVocabulary("FRAGMENTS");
     set_stack_self(e1);
 
+    const auto e2 = dict.createVocabulary("UNSAFE");
+    set_stack_self(e2);
+
+
     dict.setVocabulary("FORTH");
-    dict.setSearchOrder({"FORTH", "FRAGMENTS"});
+    dict.setSearchOrder({"FORTH", "UNSAFE", "FRAGMENTS"});
     code_generator_add_variables();
+    code_generator_add_memory_words();
     code_generator_add_stack_words();
     code_generator_add_operator_words();
     code_generator_add_immediate_words();
@@ -291,9 +298,77 @@ void code_generator_initialize() {
         R"( : HEX 16 BASE ! ;)");
 
     Interpreter::instance().execute(
+        R"(
+        : COUNT
+          DUP C@ SWAP 1 + SWAP ; )");
+
+
+    Interpreter::instance().execute(
+        R"( UNSAFE DEFINITIONS )");
+
+    Interpreter::instance().execute(
+        R"(
+    : ACCEPT
+            DUP 2>R
+            BEGIN
+                KEY DUP 10 = IF
+                    2DROP
+                    2XR> -
+                    EXIT
+                THEN
+                DUP EMIT
+                SWAP TUCK C! 1 +
+                R> 1 - >R
+            R@ 0 = UNTIL
+            DROP
+            2XR> -
+    ;
+    )");
+
+    Interpreter::instance().execute(
+        R"( FORTH DEFINITIONS )");
+
+
+    Interpreter::instance().execute(
+        R"(
+        : INPUT
+            TIB DUP 1 + 128 ACCEPT SWAP C! ; )");
+
+
+    //  : type >R BEGIN DUP C@ EMIT R> 1 - >R 1 + R@ 0 > WHILE REPEAT R> 2DROP ;
+    Interpreter::instance().execute(
+        R"(
+        : TYPE
+            >R BEGIN
+                DUP C@ EMIT
+                R> 1 - >R
+                1 +
+                R@ 0 > WHILE
+            REPEAT
+            R> 2DROP ; )");
+
+    Interpreter::instance().execute(
+        R"(
+    : rfact
+        DUP 2 < IF DROP 1 EXIT THEN  DUP 1 - RECURSE * ;
+    )");
+
+    Interpreter::instance().execute(
+        R"(
+       : FACT
+           DUP 2 < IF DROP 1 EXIT THEN
+           DUP
+           BEGIN DUP 2 > WHILE
+            1 - SWAP OVER * SWAP
+           REPEAT DROP ;
+    )");
+
+
+    Interpreter::instance().execute(
         R"( CLS ." MacForth" CR )");
 
-    std::cout << "FORTH dictionary created." << std::endl;
+
+    // std::cout << "FORTH dictionary created." << std::endl;
 }
 
 
@@ -473,16 +548,10 @@ void compile_pushVariableAddress(const int64_t literal, const std::string &name)
     if (initialize_assembler(assembler)) return;
 
     assembler->comment("; -- cfetch from DS (C@)");
-    assembler->comment("; Pop address, fetch byte value, and push");
+    assembler->comment("; fetch byte from TOS replace TOS with byte");
 
-    // Pop the address from the stack into RCX
-    popDS(asmjit::x86::rcx);
-
-    // Fetch the **byte** from the address (RCX) into RAX (low byte AL)
-    assembler->movzx(asmjit::x86::rax, asmjit::x86::byte_ptr(asmjit::x86::rcx)); // Zero-extend byte to RAX
-
-    // Push the fetched byte (RAX) back onto the stack
-    pushDS(asmjit::x86::rax);
+    assembler->mov(asmjit::x86::rcx, asmjit::x86::r13);
+    assembler->movzx(asmjit::x86::r13, asmjit::x86::byte_ptr(asmjit::x86::rcx)); // Zero-extend byte to RAX
 }
 
 
@@ -544,6 +613,17 @@ void compile_pushVariableAddress(const int64_t literal, const std::string &name)
 [[maybe_unused]] static void spit_char(const char c) {
     putchar(c);
 }
+
+// unlikely but possible that we might get EOF from stdin
+[[maybe_unused]] static int slurp_char() {
+    auto c = getchar();
+    if (c == EOF) {
+        SignalHandler::instance().raise(26); // EOF
+        return c;
+    }
+    return c;
+}
+
 
 static void spit_end_line() {
     putchar('\n');
@@ -704,16 +784,29 @@ static void compile_SWAP() {
     assembler->xchg(asmjit::x86::r13, asmjit::x86::r12); // Swap TOS and TOS-1
 }
 
+// static void compile_OVER() {
+//     asmjit::x86::Assembler *assembler;
+//     initialize_assembler(assembler);
+//     using namespace asmjit;
+//     // OVER ( x1 x2 -- x1 x2 x1 )
+//     assembler->comment("; -- OVER ");
+//     assembler->sub(x86::r15, imm(8)); // Decrement stack pointer to create space for new value
+//     assembler->mov(ptr(x86::r15), x86::r12); // Store TOS-1 (r12) in memory at [r15]
+//     assembler->mov(x86::r12, x86::r13); // Update TOS-1 (r12) to TOS (r13)
+//     assembler->mov(x86::r13, ptr(x86::r15)); // Reload the duplicated value from memory into TOS (r13)
+// }
+
+
 static void compile_OVER() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
-    using namespace asmjit;
-    // OVER ( x1 x2 -- x1 x2 x1 )
+    namespace x86 = asmjit::x86;
     assembler->comment("; -- OVER ");
-    assembler->sub(x86::r15, imm(8)); // Decrement stack pointer to create space for new value
-    assembler->mov(ptr(x86::r15), x86::r12); // Store TOS-1 (r12) in memory at [r15]
-    assembler->mov(x86::r12, x86::r13); // Update TOS-1 (r12) to TOS (r13)
-    assembler->mov(x86::r13, ptr(x86::r15)); // Reload the duplicated value from memory into TOS (r13)
+    assembler->sub(x86::r15, 8);
+    assembler->mov(ptr(x86::r15), x86::r12); // push TOS-1
+    assembler->mov(x86::rax, x86::r12); // temp = x1
+    assembler->mov(x86::r12, x86::r13); // r12 = x2
+    assembler->mov(x86::r13, x86::rax); // r13 = x1
 }
 
 static void compile_NIP() {
@@ -967,6 +1060,77 @@ uint64_t fetch4th() {
 }
 
 
+static void compile_FILL() {
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+    // FILL  ( addr u char -- )
+    assembler->comment("; -- FILL ");
+    assembler->push(asmjit::x86::rdi);
+    assembler->movzx(asmjit::x86::esi, asmjit::x86::r13b); // Load char byte into rax
+    assembler->mov(asmjit::x86::rdx, asmjit::x86::r12); // Load count into rcx
+    assembler->mov(asmjit::x86::rdi, ptr(asmjit::x86::r15)); // addr
+    assembler->call(memset);
+    assembler->pop(asmjit::x86::rdi);
+    compile_2DROP();
+    compile_DROP();
+}
+
+static void compile_BLANK() {
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+    // FILL  ( addr u char -- )
+    assembler->comment("; -- BLANK ");
+    assembler->push(asmjit::x86::rdi);
+    assembler->mov(asmjit::x86::esi, 32);
+    assembler->mov(asmjit::x86::rdx, asmjit::x86::r13); // Load count into rcx
+    assembler->mov(asmjit::x86::rdi, asmjit::x86::r12); // addr
+    assembler->call(memset);
+    assembler->pop(asmjit::x86::rdi);
+    compile_2DROP();
+}
+
+static void compile_ERASE() {
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+    // FILL  ( addr u char -- )
+    assembler->comment("; -- ERASE ");
+    assembler->push(asmjit::x86::rdi);
+    assembler->mov(asmjit::x86::esi, 0);
+    assembler->mov(asmjit::x86::rdx, asmjit::x86::r13); // Load count into rcx
+    assembler->mov(asmjit::x86::rdi, asmjit::x86::r12); // addr
+    assembler->call(memset);
+    assembler->pop(asmjit::x86::rdi);
+    compile_2DROP();
+}
+
+
+void code_generator_add_memory_words() {
+    auto &dict = ForthDictionary::instance();
+
+    dict.addCodeWord("FILL", "UNSAFE",
+                     ForthState::EXECUTABLE,
+                     ForthWordType::WORD,
+                     static_cast<ForthFunction>(&compile_FILL),
+                     code_generator_build_forth(compile_FILL),
+                     nullptr);
+
+    dict.addCodeWord("BLANK", "UNSAFE",
+                     ForthState::EXECUTABLE,
+                     ForthWordType::WORD,
+                     static_cast<ForthFunction>(&compile_BLANK),
+                     code_generator_build_forth(compile_BLANK),
+                     nullptr);
+
+
+    dict.addCodeWord("ERASE", "UNSAFE",
+                     ForthState::EXECUTABLE,
+                     ForthWordType::WORD,
+                     static_cast<ForthFunction>(&compile_ERASE),
+                     code_generator_build_forth(compile_ERASE),
+                     nullptr);
+}
+
+
 // Return stack at R14
 //
 
@@ -1008,6 +1172,24 @@ static void Compile_2toR() {
 }
 
 
+static void Compile_2xtoR() {
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+
+    // 2>R ( x1 x2 -- ) ( R: -- x1 x2 )
+    assembler->comment("; -- 2X>R ");
+
+    assembler->sub(asmjit::x86::r14, 8);
+    assembler->mov(asmjit::x86::ptr(asmjit::x86::r14), asmjit::x86::r12);
+
+    assembler->sub(asmjit::x86::r14, 8);
+    assembler->mov(asmjit::x86::ptr(asmjit::x86::r14), asmjit::x86::r13);
+
+    // Update R13 (TOS) with the value of TOS-2 (data stack at [R15])
+    compile_2DROP();
+}
+
+
 static void Compile_fromR() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
@@ -1032,6 +1214,25 @@ static void Compile_2fromR() {
 
     // over write R13, R12 from return stack
     assembler->comment("; -- R13, R12 from return stack ");
+    assembler->mov(asmjit::x86::r13, asmjit::x86::ptr(asmjit::x86::r14));
+    assembler->add(asmjit::x86::r14, 8); // Adjust return stack pointer (pop x1)
+    assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r14));
+    assembler->add(asmjit::x86::r14, 8); // Adjust return stack pointer (pop x2)
+}
+
+
+// like 2>R SWAP
+static void Compile_2xR() {
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+
+
+    assembler->comment("; -- 2xR> ");
+    assembler->comment("; -- make space ");
+    compile_2DUP(); // move R13. R12 to datstack
+
+    // over write R13, R12 from return stack
+    assembler->comment("; -- R12, R13 swap from return stack ");
     assembler->mov(asmjit::x86::r13, asmjit::x86::ptr(asmjit::x86::r14));
     assembler->add(asmjit::x86::r14, 8); // Adjust return stack pointer (pop x1)
     assembler->mov(asmjit::x86::r12, asmjit::x86::ptr(asmjit::x86::r14));
@@ -1181,21 +1382,21 @@ void code_generator_add_stack_words() {
                      nullptr);
 
     // storeFromDS !
-    dict.addCodeWord("!", "FORTH",
+    dict.addCodeWord("!", "UNSAFE",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
                      static_cast<ForthFunction>(&storeFromDS),
                      code_generator_build_forth(storeFromDS),
                      nullptr);
 
-    dict.addCodeWord("C!", "FORTH",
+    dict.addCodeWord("C!", "UNSAFE",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
                      static_cast<ForthFunction>(&cstoreFromDS),
                      code_generator_build_forth(cstoreFromDS),
                      nullptr);
 
-    dict.addCodeWord("C@", "FORTH",
+    dict.addCodeWord("C@", "UNSAFE",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
                      static_cast<ForthFunction>(&cfetchFromDS),
@@ -1203,7 +1404,7 @@ void code_generator_add_stack_words() {
                      nullptr);
 
 
-    dict.addCodeWord("@", "FORTH",
+    dict.addCodeWord("@", "UNSAFE",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
                      static_cast<ForthFunction>(&fetchFromDS),
@@ -1250,6 +1451,16 @@ void code_generator_add_stack_words() {
                      nullptr
     );
 
+
+    dict.addCodeWord("2X>R", "FORTH",
+                     ForthState::EXECUTABLE,
+                     ForthWordType::WORD,
+                     static_cast<ForthFunction>(&Compile_2xtoR),
+                     code_generator_build_forth(Compile_2xtoR),
+                     nullptr
+    );
+
+
     dict.addCodeWord("R>", "FORTH",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
@@ -1265,6 +1476,16 @@ void code_generator_add_stack_words() {
                      code_generator_build_forth(Compile_2fromR),
                      nullptr
     );
+
+
+    dict.addCodeWord("2xR>", "FORTH",
+                     ForthState::EXECUTABLE,
+                     ForthWordType::WORD,
+                     static_cast<ForthFunction>(&Compile_2xR),
+                     code_generator_build_forth(Compile_2xR),
+                     nullptr
+    );
+
 
     // DUP
     dict.addCodeWord("DUP", "FORTH",
@@ -1388,6 +1609,17 @@ void code_generator_add_stack_words() {
                      nullptr);
 }
 
+
+static void compile_EXEC() {
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+    assembler->comment("; -- EXEC ");
+    popDS(asmjit::x86::rax); //
+    // balance RSP
+    assembler->sub(asmjit::x86::rsp, 8);
+    assembler->call(asmjit::x86::rax);
+    assembler->add(asmjit::x86::rsp, 8);
+}
 
 static void compile_ADD() {
     asmjit::x86::Assembler *assembler;
@@ -1739,6 +1971,14 @@ static void compile_NEQ() {
 void code_generator_add_operator_words() {
     ForthDictionary &dict = ForthDictionary::instance();
 
+    dict.addCodeWord("EXEC", "UNSAFE",
+                     ForthState::EXECUTABLE,
+                     ForthWordType::WORD,
+                     compile_EXEC,
+                     code_generator_build_forth(compile_EXEC),
+                     nullptr);
+
+
     dict.addCodeWord("=", "FORTH",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
@@ -1938,12 +2178,46 @@ void runImmediateString(std::deque<ForthToken> &tokens) {
 }
 
 
+void runImmediateTICK(std::deque<ForthToken> &tokens) {
+    if (tokens.empty()) return; // Exit early if no tokens to process
+    // Get and remove the first token
+    const ForthToken first = tokens.front();
+    const auto word_name = first.value;
+    tokens.erase(tokens.begin());
+    auto &dict = ForthDictionary::instance();
+    auto word = dict.findWord(word_name.c_str());
+    if (word == nullptr) {
+        SignalHandler::instance().raise(14);
+    }
+    cpush(reinterpret_cast<uint64_t>(word->executable));
+}
+
+void compileImmediateTICK(std::deque<ForthToken> &tokens) {
+    if (tokens.empty()) return; // Exit early if no tokens to process
+    // Get and remove the first token
+    const ForthToken first = tokens.front();
+
+    tokens.erase(tokens.begin());
+    const ForthToken second = tokens.front();
+    const auto word_name = second.value;
+    auto &dict = ForthDictionary::instance();
+    auto word = dict.findWord(word_name.c_str());
+    if (word == nullptr) {
+        SignalHandler::instance().raise(14);
+    }
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+    assembler->comment("; -- TICK");
+    compile_DUP();
+    assembler->mov(asmjit::x86::r13, reinterpret_cast<uint64_t>(word->executable));
+}
+
 void runImmediateCHAR(std::deque<ForthToken> &tokens) {
     if (tokens.empty()) return; // Exit early if no tokens to process
     // Get and remove the first token
     const ForthToken first = tokens.front();
-    tokens.erase(tokens.begin());
     const int c = static_cast<unsigned char>(first.value[0]);
+    tokens.erase(tokens.begin());
     cpush(c);
 }
 
@@ -2176,7 +2450,7 @@ bool create_variable_allot(const std::string &name, size_t byteCount) {
 void runImmediateVAR_AT(std::deque<ForthToken> &tokens) {
     if (tokens.empty()) return; // Exit early if no tokens to process
     // Get and remove the first token
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     const auto &dict = ForthDictionary::instance();
     auto var_word = dict.findWord(first.value.c_str());
 
@@ -2200,7 +2474,7 @@ void runImmediateVAR_AT(std::deque<ForthToken> &tokens) {
 void runImmediateVAR_STORE(std::deque<ForthToken> &tokens) {
     if (tokens.empty()) return; // Exit early if no tokens to process
     // Get and remove the first token
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     const auto &dict = ForthDictionary::instance();
     const auto var_word = dict.findWord(first.value.c_str());
 
@@ -2227,7 +2501,7 @@ void runImmediateCAT_EMIT(std::deque<ForthToken> &tokens) {
     initialize_assembler(assembler);
     assembler->comment("; -- C@ EMIT");
     assembler->push(asmjit::x86::rdi);
-    assembler->mov(asmjit::x86::rdi, asmjit::x86::ptr(asmjit::x86::r13)) ;
+    assembler->mov(asmjit::x86::rdi, asmjit::x86::ptr(asmjit::x86::r13));
     assembler->call(spit_char);
     assembler->pop(asmjit::x86::rdi);
     compile_DROP();
@@ -2236,7 +2510,10 @@ void runImmediateCAT_EMIT(std::deque<ForthToken> &tokens) {
 // this is where predefined variables are created
 void code_generator_add_variables() {
     create_variable("BASE", 10);
+    create_variable(">IN", 0);
+    create_variable("SPAN", 0);
     create_variable_allot("PAD", 512);
+    create_variable_allot("TIB", 512);
 }
 
 
@@ -2272,7 +2549,6 @@ void runImmediateDEFER(std::deque<ForthToken> &tokens) {
 }
 
 
-// IS assigns first words action to second words action
 // IS new_action deferred_word
 void runImmediateIS(std::deque<ForthToken> &tokens) {
     if (tokens.empty()) return; // Exit early if no tokens to process
@@ -2280,42 +2556,21 @@ void runImmediateIS(std::deque<ForthToken> &tokens) {
     // Get and remove the first token
     // The first word is the new action
     const ForthToken first = tokens.front();
-    if (first.type != TokenType::TOKEN_WORD) {
-        SignalHandler::instance().raise(11); // Invalid token - raise an error
-        return;
-    }
     tokens.erase(tokens.begin()); // Remove the processed token
-
-    // Get and remove the second token
-    // The second word is the defer word, that will be updated.
-    const ForthToken second = tokens.front();
-    if (second.type != TokenType::TOKEN_WORD) {
-        SignalHandler::instance().raise(11); // Invalid token - raise an error
-        return;
-    }
-    tokens.erase(tokens.begin()); // Remove the processed token
-
+    auto word_name = first.value;
     auto &dict = ForthDictionary::instance();
-    auto first_word = dict.findWord(first.value.c_str());
-    if (!first_word) {
-        SignalHandler::instance().raise(14); // Invalid token - raise an error
-        return;
-    }
-    auto second_word = dict.findWord(second.value.c_str());
+    auto second_word = dict.findWord(word_name.c_str());
     if (!second_word) {
         SignalHandler::instance().raise(14); // Invalid token - raise an error
         return;
     }
-
-    if (first_word->executable != nullptr) {
-        second_word->executable = first_word->executable;
-    }
-    if (first_word->generator != nullptr) {
-        second_word->generator = first_word->generator;
-    }
-    if (first_word->immediate_interpreter != nullptr) {
-        second_word->immediate_interpreter = first_word->immediate_interpreter;
-    }
+    auto ptr = &second_word->executable;
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+    assembler->comment("; -- IS ");
+    assembler->mov(asmjit::x86::rax, reinterpret_cast<uint64_t>(ptr));
+    assembler->mov(asmjit::x86::r13, asmjit::x86::ptr(asmjit::x86::rax));
+    compile_DROP();
 }
 
 // Our Forth allocates data per word
@@ -2364,22 +2619,35 @@ void display_show_help() {
     std::cout << " words_detailed" << std::endl;
 }
 
+
 // SHOW THING
 void runImmediateSHOW(std::deque<ForthToken> &tokens) {
+    auto size = tokens.size();
+
+
     if (tokens.empty()) return; // Exit early if no tokens to process
 
     // Get and remove the first token
     // The first word is the new action
     const ForthToken first = tokens.front();
-    tokens.erase(tokens.begin()); // Remove the processed token
     const auto thing = first.value;
 
+    tokens.erase(tokens.begin());
     if (thing.empty()) {
         display_show_help();
         return;
     }
-    if (thing == "ALLOT") {
+
+
+    if (thing == "ALLOT" && size == 2) {
         WordHeap::instance().listAllocations();
+    } else if (thing == "ALLOT" && size == 3) {
+        const ForthToken &next_token = tokens.front();
+        auto &dict = ForthDictionary::instance();
+        auto first_word = dict.findWord(next_token.value.c_str());
+        if (!first_word) { return; }
+        auto id = first_word->getID();
+        WordHeap::instance().listAllocation(id);
     } else if (thing == "CHAIN") {
         auto &dict = ForthDictionary::instance();
         for (int i = 0; i < 16; i++) {
@@ -2479,6 +2747,7 @@ void runImmediateTIMEIT(std::deque<ForthToken> &tokens) {
     uint64_t end = mach_absolute_time();
     uint64_t durationNs = (end - start_time);
     std::cout << "Duration: ";
+    std::cout << std::dec;
     displayDuration(durationNs);
 }
 
@@ -2520,7 +2789,7 @@ void runImmediateSEE(std::deque<ForthToken> &tokens) {
 void runImmediateADD_IMM(std::deque<ForthToken> &tokens) {
     if (tokens.empty()) return; // Exit early if no tokens to process
 
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2545,7 +2814,7 @@ void runImmediateCMP_LT_IMM(std::deque<ForthToken> &tokens) {
     if (tokens.empty()) return; // Exit early if no tokens to process
 
     // Get and remove the first token
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2586,7 +2855,7 @@ void runImmediateSUB_IMM(std::deque<ForthToken> &tokens) {
 
     // Get and remove the first token
     // The first word is the new action
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2614,7 +2883,7 @@ void runImmediateCMP_GT_IMM(std::deque<ForthToken> &tokens) {
     if (tokens.empty()) return; // Exit early if no tokens to process
 
     // Get and remove the first token
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2701,7 +2970,7 @@ void runImmediateSHL_IMM(std::deque<ForthToken> &tokens) {
 
     // Get and remove the first token
     // The first word is the new action
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2730,7 +2999,7 @@ void runImmediateSHR_IMM(std::deque<ForthToken> &tokens) {
 
     // Get and remove the first token
     // The first word is the new action
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2759,7 +3028,7 @@ void runImmediateMUL_IMM(std::deque<ForthToken> &tokens) {
 
     // Get and remove the first token
     // The first word is the new action
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2788,7 +3057,7 @@ void runImmediateDIV_IMM(std::deque<ForthToken> &tokens) {
 
     // Get and remove the first token
     // The first word is the new action
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2830,7 +3099,7 @@ void runImmediateLEA_TOS(std::deque<ForthToken> &tokens) {
 
     // Get and remove the first token
     // The first word is the new action
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2857,7 +3126,7 @@ void runImmediateSETCURRENT(std::deque<ForthToken> &tokens) {
 
     // Get and remove the first token
     // The first word is the new action
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_WORD) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2883,7 +3152,7 @@ void runImmediateSETCURRENT(std::deque<ForthToken> &tokens) {
 
 //   R> 1 + >R (bump pointer held on return stack)
 void runImmediateINC_R(std::deque<ForthToken> &tokens) {
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2901,7 +3170,7 @@ void runImmediateINC_R(std::deque<ForthToken> &tokens) {
 
 //   R> 1 + >R (bump pointer held on return stack)
 void runImmediateDEC_R(std::deque<ForthToken> &tokens) {
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2917,7 +3186,7 @@ void runImmediateDEC_R(std::deque<ForthToken> &tokens) {
 
 // poke value from return stack
 void runImmediateRATcStore(std::deque<ForthToken> &tokens) {
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2932,9 +3201,26 @@ void runImmediateRATcStore(std::deque<ForthToken> &tokens) {
     compile_DROP();
 }
 
+
+//  INC_2OS SWAP n + SWAP = increment 2OS
+void runImmediateINC_2OS(std::deque<ForthToken> &tokens) {
+    const ForthToken &first = tokens.front();
+    if (first.type != TokenType::TOKEN_OPTIMIZED) {
+        SignalHandler::instance().raise(11); // Invalid token - raise an error
+        return;
+    }
+    const auto increment = first.int_value;
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+    assembler->comment("; -- SWAP n + SWAP");
+    assembler->commentf("; - Add %d to 2OS", increment);
+    assembler->add(asmjit::x86::r12, asmjit::imm(increment));
+}
+
+
 // literal variable !  (e.g 10 base !)
 void runImmediateLIT_VAR_Store(std::deque<ForthToken> &tokens) {
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2963,13 +3249,13 @@ void runImmediateLIT_VAR_Store(std::deque<ForthToken> &tokens) {
     assembler->comment("; -- literal variable ! ");
     assembler->commentf("; -- %d %s ! ", literal, varname.c_str());
     assembler->mov(asmjit::x86::rax, asmjit::imm(literal)); // Load the literal value into RAX.
-    assembler->mov(asmjit::x86::rcx,asmjit::imm(data)); // Store the data address for the variable
+    assembler->mov(asmjit::x86::rcx, asmjit::imm(data)); // Store the data address for the variable
     assembler->mov(asmjit::x86::ptr(asmjit::x86::rcx), asmjit::x86::rax); // address=literal
 }
 
 // variable >R
 void runImmediateVAR_AT_TOR(std::deque<ForthToken> &tokens) {
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -2986,7 +3272,7 @@ void runImmediateVAR_AT_TOR(std::deque<ForthToken> &tokens) {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     assembler->comment("; -- variable >R  ");
-    assembler->commentf("; -- %s >R ",  varname.c_str());
+    assembler->commentf("; -- %s >R ", varname.c_str());
     assembler->mov(asmjit::x86::rcx, asmjit::imm(data)); // address to rcx
     // fetch value at [rcx] to rax
     assembler->mov(asmjit::x86::rax, asmjit::x86::ptr(asmjit::x86::rcx));
@@ -2996,7 +3282,7 @@ void runImmediateVAR_AT_TOR(std::deque<ForthToken> &tokens) {
 }
 
 void runImmediateVAR_TOR(std::deque<ForthToken> &tokens) {
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -3013,17 +3299,15 @@ void runImmediateVAR_TOR(std::deque<ForthToken> &tokens) {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
     assembler->comment("; -- variable >R  ");
-    assembler->commentf("; -- %s >R ",  varname.c_str());
+    assembler->commentf("; -- %s >R ", varname.c_str());
     assembler->mov(asmjit::x86::rcx, asmjit::imm(data)); // address to rcx
     assembler->sub(asmjit::x86::r14, 8); // Allocate space on return stack
     assembler->mov(asmjit::x86::ptr(asmjit::x86::r14), asmjit::x86::rcx);
 }
 
 
-
-
 void runImmediateRATStore(std::deque<ForthToken> &tokens) {
-    const ForthToken& first = tokens.front();
+    const ForthToken &first = tokens.front();
     if (first.type != TokenType::TOKEN_OPTIMIZED) {
         SignalHandler::instance().raise(11); // Invalid token - raise an error
         return;
@@ -3071,20 +3355,19 @@ void code_generator_add_immediate_words() {
 
     //
     dict.addCodeWord("C@_EMIT", "FRAGMENTS",
-                    ForthState::IMMEDIATE,
-                    ForthWordType::MACRO,
-                    nullptr,
-                    nullptr,
-                    runImmediateCAT_EMIT);
+                     ForthState::IMMEDIATE,
+                     ForthWordType::MACRO,
+                     nullptr,
+                     nullptr,
+                     runImmediateCAT_EMIT);
 
 
     dict.addCodeWord("VAR_TOR", "FRAGMENTS",
-                ForthState::IMMEDIATE,
-                ForthWordType::MACRO,
-                nullptr,
-                nullptr,
-                runImmediateVAR_TOR);
-
+                     ForthState::IMMEDIATE,
+                     ForthWordType::MACRO,
+                     nullptr,
+                     nullptr,
+                     runImmediateVAR_TOR);
 
 
     dict.addCodeWord("VAR_@", "FRAGMENTS",
@@ -3124,6 +3407,14 @@ void code_generator_add_immediate_words() {
                      nullptr,
                      runImmediateINC_R);
 
+
+    dict.addCodeWord("INC_2OS", "FRAGMENTS",
+                     ForthState::IMMEDIATE,
+                     ForthWordType::MACRO,
+                     nullptr,
+                     nullptr,
+                     runImmediateINC_2OS);
+
     dict.addCodeWord("DEC_R@", "FRAGMENTS",
                      ForthState::IMMEDIATE,
                      ForthWordType::MACRO,
@@ -3132,11 +3423,11 @@ void code_generator_add_immediate_words() {
                      runImmediateDEC_R);
 
     dict.addCodeWord("LIT_VAR_!", "FRAGMENTS",
-                      ForthState::IMMEDIATE,
-                      ForthWordType::MACRO,
-                      nullptr,
-                      nullptr,
-                      runImmediateLIT_VAR_Store);
+                     ForthState::IMMEDIATE,
+                     ForthWordType::MACRO,
+                     nullptr,
+                     nullptr,
+                     runImmediateLIT_VAR_Store);
 
 
     dict.addCodeWord("LEA_TOS", "FRAGMENTS",
@@ -3363,6 +3654,18 @@ static void compile_DotString(std::deque<ForthToken> &tokens) {
     assembler->pop(asmjit::x86::rdi); // Pop TOS off the stack
 }
 
+// key may raise EOF
+static void compile_KEY() {
+    asmjit::x86::Assembler *assembler;
+    initialize_assembler(assembler);
+    assembler->comment("; -- KEY ");
+    assembler->push(asmjit::x86::rdi);
+    assembler->call(slurp_char);
+    assembler->pop(asmjit::x86::rdi);
+    compile_DUP();
+    assembler->mov(asmjit::x86::r13, asmjit::x86::rax);
+    assembler->comment("; TOS = ASCII key code");
+}
 
 static void compile_EMIT() {
     asmjit::x86::Assembler *assembler;
@@ -3445,6 +3748,52 @@ static void compile_PAGE() {
     assembler->add(asmjit::x86::r15, 8); // Adjust stack pointer
 }
 
+//
+// static void compile_COUNT() {
+//     asmjit::x86::Assembler *assembler;
+//     initialize_assembler(assembler);
+//     assembler->comment("; -- COUNT ");
+//     assembler->mov(asmjit::x86::al, ptr(asmjit::x86::r13));
+//     assembler->add(asmjit::x86::r13, 1);
+//     // make space for count
+//     compile_DUP();
+//     // set TOS to count
+//     assembler->mov(asmjit::x86::r13, asmjit::x86::al); // save count
+//     assembler->comment("; TOS=count, 2OS=address");
+// }
+
+//
+// static void compile_TYPE() {
+//
+//     asmjit::x86::Assembler *assembler;
+//     initialize_assembler(assembler);
+//     assembler->comment("; -- TYPE");
+//
+//     LabelManager labels; // local labels
+//     labels.createLabel(*assembler, "emit_loop");
+//
+//     // Pop Count and address from Data Stack
+//     assembler->mov(asmjit::x86::rcx, asmjit::x86::r13); // RCX = count
+//     assembler->mov(asmjit::x86::rsi, asmjit::x86::r12); // RSI = address
+//     compile_2DROP();
+//
+//     assembler->comment("; Loop ");
+//     labels.bindLabel(*assembler, "emit_loop"); // Label for the loop
+//
+//     assembler->mov(asmjit::x86::al, ptr(asmjit::x86::rsi));
+//     assembler->push(asmjit::x86::rcx);
+//     assembler->push(asmjit::x86::rsi); // Push TOS onto the stack
+//     assembler->push(asmjit::x86::rdi);
+//     assembler->mov(asmjit::x86::rdi, asmjit::x86::al);
+//     assembler->call(spit_char);
+//     assembler->pop(asmjit::x86::rdi);
+//     assembler->pop(asmjit::x86::rsi);
+//     assembler->pop(asmjit::x86::rcx);
+//     assembler->add(asmjit::x86::rsi, 1);
+//     // Decrement Count (RCX) and loop if not zero
+//     assembler->dec(asmjit::x86::rcx);
+//     labels.jnz(*assembler,"emit_loop");
+// }
 
 void code_generator_add_io_words() {
     ForthDictionary &dict = ForthDictionary::instance();
@@ -3464,6 +3813,23 @@ void code_generator_add_io_words() {
                      nullptr,
                      runImmediateCHAR,
                      &compile_CHAR);
+
+
+    dict.addCodeWord("[']", "FORTH",
+                     ForthState::IMMEDIATE,
+                     ForthWordType::WORD,
+                     nullptr,
+                     nullptr,
+                     nullptr,
+                     &compileImmediateTICK);
+
+    dict.addCodeWord("'", "FORTH",
+                     ForthState::IMMEDIATE,
+                     ForthWordType::WORD,
+                     nullptr,
+                     nullptr,
+                     runImmediateTICK,
+                     nullptr);
 
 
     dict.addCodeWord(".\"", "FORTH",
@@ -3490,12 +3856,27 @@ void code_generator_add_io_words() {
                      code_generator_build_forth(compile_SPACE),
                      nullptr);
 
-    dict.addCodeWord("PAGE", "FORTH",
+    dict.addCodeWord("(PAGE)", "FORTH",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
                      static_cast<ForthFunction>(&compile_PAGE),
                      code_generator_build_forth(compile_PAGE),
                      nullptr);
+
+    // dict.addCodeWord("COUNT", "FORTH",
+    //                  ForthState::EXECUTABLE,
+    //                  ForthWordType::WORD,
+    //                  static_cast<ForthFunction>(&compile_COUNT),
+    //                  code_generator_build_forth(compile_COUNT),
+    //                  nullptr);
+
+
+    // dict.addCodeWord("TYPE", "FORTH",
+    //                  ForthState::EXECUTABLE,
+    //                  ForthWordType::WORD,
+    //                  static_cast<ForthFunction>(&compile_TYPE),
+    //                  code_generator_build_forth(compile_TYPE),
+    //                  nullptr);
 
     dict.addCodeWord("CLS", "FORTH",
                      ForthState::EXECUTABLE,
@@ -3518,17 +3899,25 @@ void code_generator_add_io_words() {
                      static_cast<ForthFunction>(&compile_EMIT),
                      code_generator_build_forth(compile_EMIT),
                      nullptr);
+
+
+    dict.addCodeWord("KEY", "FORTH",
+                     ForthState::EXECUTABLE,
+                     ForthWordType::WORD,
+                     static_cast<ForthFunction>(&compile_KEY),
+                     code_generator_build_forth(compile_KEY),
+                     nullptr);
 }
 
 // FORTH DEFINITIONS set current directory to FORTH
 
 ForthFunction execDEFINITIONS() {
-    std::cout << "Executing DEFINITION" << std::endl;
+    // std::cout << "Executing DEFINITION" << std::endl;
     auto *entry = reinterpret_cast<ForthDictionaryEntry *>(cpop());
     if (!isHeapPointer(entry, code_generator_heap_start)) {
         SignalHandler::instance().raise(18);
     }
-    entry->display();
+    // entry->display();
     ForthDictionary::instance().setVocabulary(entry);
     ForthDictionary::instance().setVocabulary(SymbolTable::instance().getSymbol(entry->id));
 
@@ -3540,7 +3929,7 @@ void code_generator_add_vocab_words() {
     ForthDictionary &dict = ForthDictionary::instance();
 
     // FORTH DEFINITIONS
-    dict.addCodeWord("DEFINITIONS", "FORTH",
+    dict.addCodeWord("DEFINITIONS", "UNSAFE",
                      ForthState::EXECUTABLE,
                      ForthWordType::WORD,
                      nullptr,
@@ -3970,45 +4359,25 @@ static void genWhile() {
 static void genRedo() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
-
-    // Look for the current function's entry label on the loop stack
-    if (!loopStack.empty() && loopStack.top().type == FUNCTION_ENTRY_EXIT) {
-        auto functionLabels = std::get<FunctionEntryExitLabel>(loopStack.top().label);
-
-        assembler->comment("; -- REDO (jump to start of word) ");
-
-        // Generate a call to the entry label (self-recursion)
-        assembler->jmp(functionLabels.entryLabel);
-    } else {
-        throw std::runtime_error("genRedo: No matching FUNCTION_ENTRY_EXIT structure on the stack");
-    }
+    assembler->comment("; -- REDO (jump to start of word) ");
+    // Generate a call to the entry label (self-recursion)
+    labels.jmp(*assembler, "entry_label");
 }
-
 
 // recursion
 static void genRecurse() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
-
-    // Look for the current function's entry label on the loop stack
-    if (!loopStack.empty() && loopStack.top().type == FUNCTION_ENTRY_EXIT) {
-        auto functionLabels = std::get<FunctionEntryExitLabel>(loopStack.top().label);
-
-        assembler->comment("; -- RECURSE (call self)");
-        // Generate a call to the entry label (self-recursion)
-        assembler->push(asmjit::x86::rdi);
-        assembler->call(functionLabels.entryLabel);
-        assembler->pop(asmjit::x86::rdi);
-    } else {
-        throw std::runtime_error("genRecurse: No matching FUNCTION_ENTRY_EXIT structure on the stack");
-    }
+    assembler->comment("; -- RECURSE ");
+    // Generate a call to the entry label (self-recursion)
+    assembler->push(asmjit::x86::rdi);
+    labels.call(*assembler, "enter_function");
+    assembler->pop(asmjit::x86::rdi);
 }
 
 static void genIf() {
     asmjit::x86::Assembler *assembler;
     initialize_assembler(assembler);
-
-
     IfThenElseLabel branches;
     branches.ifLabel = assembler->newLabel();
     branches.elseLabel = assembler->newLabel();
@@ -4116,7 +4485,6 @@ void code_generator_add_control_flow_words() {
                      static_cast<ForthFunction>(&genElse),
                      nullptr,
                      nullptr);
-
 
     dict.addCodeWord("BEGIN", "FORTH",
                      ForthState::GENERATOR,

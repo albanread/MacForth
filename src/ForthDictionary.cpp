@@ -392,6 +392,11 @@ void ForthDictionary::displayWords() const {
         // Get the color code for the word type
         std::string color = getColorCode(entry->type);
 
+        // UNSAFE words
+        if (entry->vocab_id == 3) {
+            color = "\033[1;31m"; // RED
+        }
+
         // Print the word with its corresponding color
         std::cout << color << entry->getWordName() << "\033[0m "; // Reset to default after printing
 
@@ -415,12 +420,12 @@ void ForthDictionary::setVocabulary(const std::string &vocabName) {
         throw std::invalid_argument("Vocabulary " + vocabName + " does not exist.");
     }
     currentVocabulary = findWord(vocabName.c_str());
-    std::cout << "Current vocabulary set to: " << vocabName << "\n";
+    // std::cout << "Current vocabulary set to: " << vocabName << "\n";
 }
 
 void ForthDictionary::setVocabulary(ForthDictionaryEntry *vocab) {
     currentVocabulary = vocab;
-    std::cout << "Current vocabulary set to: " << SymbolTable::instance().getSymbol(currentVocabulary->id) << "\n";
+    // std::cout << "Current vocabulary set to: " << SymbolTable::instance().getSymbol(currentVocabulary->id) << "\n";
 }
 
 
@@ -499,7 +504,7 @@ ForthDictionaryEntry *ForthDictionary::createVocabulary(const std::string &vocab
         searchOrder.push_back(findWord(vocabName.c_str()));
     }
 
-    std::cout << "Created vocabulary: " << vocabName << "\n";
+    // std::cout << "Created vocabulary: " << vocabName << "\n";
 
     return vocabEntry; // Return the newly created vocabulary
 }

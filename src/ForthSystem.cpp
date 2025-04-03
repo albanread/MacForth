@@ -23,9 +23,7 @@ void ForthSystem::initialize() {
         // JIT-related systems
         JitContext::instance();
 
-
-
-        std::cout << "ForthSystem initialized successfully." << std::endl;
+        // std::cout << "ForthSystem initialized successfully." << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "Error during ForthSystem initialization: " << e.what() << std::endl;
         throw;  // Optional: rethrow to propagate initialization failures

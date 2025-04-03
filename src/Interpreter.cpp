@@ -45,7 +45,7 @@ void Interpreter::handle_word(std::deque<ForthToken> &tokens) {
 
         if (word_found->executable) {
             word_found->executable();
-        } else if (word_found->immediate_interpreter) {
+        } else if (word_found->immediate_interpreter && word_found->type != ForthWordType::MACRO) {
             word_found->immediate_interpreter(tokens);
         }
     }

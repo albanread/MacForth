@@ -97,7 +97,7 @@ inline void read_input_c(char *buffer, size_t max_length) {
                                 length = strlen(buffer);
                                 pos = length;
                                 buffer[length] = '\0';
-                                write(STDOUT_FILENO, "\33[2K\r", 4); // Clear line
+                                write(STDOUT_FILENO, "\33[2K\r>", 6); // Clear the line and move to the start
                                 write(STDOUT_FILENO, buffer, length); // Display history item
                             }
                             continue;
